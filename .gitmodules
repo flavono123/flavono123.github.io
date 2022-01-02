@@ -1,0 +1,4 @@
+[submodule "themes/hugo-theme-serial-programmer"]
+	path = themes/hugo-theme-serial-programmer
+	url = https://github.com/sharadcodes/hugo-theme-serial-programmer.git
+	ignore = dirty
