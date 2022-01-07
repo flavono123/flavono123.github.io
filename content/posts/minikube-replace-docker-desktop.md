@@ -4,6 +4,7 @@ date: 2022-01-04T00:51:44+09:00
 tags:
 - docker
 - kubernetes
+- minikube
 ---
 
 https://novemberde.github.io/post/2021/09/02/podman-minikube/
