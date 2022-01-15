@@ -1,5 +1,5 @@
 ---
-title: "CKA with Practive Tests 정리: Core Concepts"
+title: "CKA with Practice Tests 정리: Core Concepts"
 date: 2022-01-15T17:09:34+09:00
 tags: 
 - kubernetes
