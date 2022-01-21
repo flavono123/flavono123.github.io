@@ -22,7 +22,7 @@
 <a href=https://flavono123.github.io/tags/ddia class=tag>ddia</a>
 </div>
 </div>
-<div class=content><p>사내에서 Elasticsearch 스터디를 진행했다. 특히 키바나(쿼리와 시각화)를 더 잘 쓰고 싶어서 이 주제를 하자고 주장했다. 그런데 우리가 스터디 하는 2~3개월 정도 기간에 가이드가 될만한 책이나 강의가 마땅치 않아, 스터디 진행 구성도 오밀조밀하게 직접했다. 그중 첫단계는 <a href=https://esbook.kimjmin.net/>Elastic 가이드 북</a>을 한번 읽는 것인데 이제 막 끝났다.</p>
+<div class=content><p>사내에서 Elasticsearch 스터디를 진행 중이다. 특히 키바나(쿼리와 시각화)를 더 잘 쓰고 싶어서 이 주제를 하자고 주장했다. 그런데 우리가 스터디 하는 2~3개월 정도 기간에 가이드가 될만한 책이나 강의가 마땅치 않아, 스터디 진행 구성도 오밀조밀하게 직접했다. 그중 첫단계는 <a href=https://esbook.kimjmin.net/>Elastic 가이드 북</a>을 한번 읽는 것인데 이제 막 끝났다.</p>
 <p>일단 너무 재밌었다. 내가 알고 싶었던 것은, match 쿼리 결과가 왜 생각하는대로 안나오는지, terms aggregation에 왜 이런 결과가 있는지, 같은 것인데 이를 다 해소할 수 있었다. 그리고 작년에 정말 재밌게 읽은(그리고 이것 마저 안했으면 작년엔 아무 소득이 없을뻔 했다고 느끼는..) <a href=https://dataintensive.net/>DDIA</a>의 내용을 다시 떠올리게 하는 것도 있어서 좋았다.</p>
 <p>정확히 말하면 DDIA 3장의 내용인데 나는 이 3장에서 처음 나와 책의 끝까지 중요한 개념인, 추가 전용 로그(append-only log)를 엔진으로 쓰는 DB, 그리고 칼럼 지향 저장소(columnar storage)를 멋진 개념이라고 생각만했다. 막상 쓸 일은 없겠다고 느꼈는데 설치하여 잘 쓰고 있는 Elasticsearch가 그런 DB였던 것이다..😱</p>
 <p>이 글은 기본적으론 위 <a href=https://esbook.kimjmin.net/>가이드북</a>의 순서를 따르되 중간중간 생략하는 부분이 많을 것이다. DDIA 3장 이외의 내용도 들어간다. 또 Elasticsearch 관련해선 가이드북 바깥으로 확장되는 설명도 있을 것이다.</p>
