@@ -1,5 +1,7 @@
 name: flavono123
-dp: https://github.com/flavono123.png
-description: 안녕하세요!
+dp: /images/highwayman_portrait_roster.png
+description: Elusive, evasive, persistent - righteous traits, for a rogue.
 email: flavono123@gmail.com
-contact: {}
+contact:
+- title: github
+  url: https://github.com/flavono123
