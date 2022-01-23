@@ -1,5 +1,5 @@
 ---
-title: "Elasticsearch를 공부하고 DDIA 다시 읽어보았다"
+title: "Elasticsearch를 공부하고 DDIA를 다시 읽어보았다"
 date: 2022-01-21T15:43:56+09:00
 tags:
 - elasticsearch
