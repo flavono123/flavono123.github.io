@@ -1,0 +1,304 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Self-signed Certificate(NGINX) | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>Self-signed Certificate(NGINX)</h2>
+<small class=date>Sat Feb 5, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/websecure class=tag>websecure</a>
+<a href=https://flavono123.github.io/tags/nginx class=tag>nginx</a>
+</div>
+</div>
+<div class=content><h3 id=0-준비>0. 준비</h3>
+<ul>
+<li>openssl3</li>
+<li>kubernetes(minikube)</li>
+</ul>
+<h3 id=1-ca-rsa-키-페어-생성>1. CA RSA 키 페어 생성</h3>
+<p>실제 CA가 아니라 우리가 직접 CA를 만들어 TLS 인증하는 과정을 모의로 해본다(self-signed certificate)</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ openssl genrsa -aes256 -out rootCA.key <span style=color:#ae81ff>2048</span>
+Enter PEM pass phrase:
+Verifying - Enter PEM pass phrase:
+
+
+$ ll rootCA.key 
+-rw-------  <span style=color:#ae81ff>1</span> hansuk  staff  <span style=color:#ae81ff>1874</span> Jan <span style=color:#ae81ff>14</span> 14:30 rootCA.key
+</code></pre></div><ul>
+<li>비밀키 분실을 대비하여 AES256으로 암호화 한다. 이때 passphrase를 잘 기억하고 발급할 때 사용하자</li>
+</ul>
+<h3 id=2-ca-인증서-발급>2. CA 인증서 발급</h3>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ openssl req -x509 -new -nodes -key rootCA.key -sha256 -days <span style=color:#ae81ff>3650</span> -out rootCA.crt
+Enter pass phrase <span style=color:#66d9ef>for</span> rootCA.key:
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter <span style=color:#e6db74>&#39;.&#39;</span>, the field will be left blank.
+-----
+Country Name <span style=color:#f92672>(</span><span style=color:#ae81ff>2</span> letter code<span style=color:#f92672>)</span> <span style=color:#f92672>[</span>AU<span style=color:#f92672>]</span>:KR
+State or Province Name <span style=color:#f92672>(</span>full name<span style=color:#f92672>)</span> <span style=color:#f92672>[</span>Some-State<span style=color:#f92672>]</span>:RootState
+Locality Name <span style=color:#f92672>(</span>eg, city<span style=color:#f92672>)</span> <span style=color:#f92672>[]</span>:RootCity
+Organization Name <span style=color:#f92672>(</span>eg, company<span style=color:#f92672>)</span> <span style=color:#f92672>[</span>Internet Widgits Pty Ltd<span style=color:#f92672>]</span>:Root Inc.
+Organizational Unit Name <span style=color:#f92672>(</span>eg, section<span style=color:#f92672>)</span> <span style=color:#f92672>[]</span>:Root CA
+Common Name <span style=color:#f92672>(</span>e.g. server FQDN or YOUR name<span style=color:#f92672>)</span> <span style=color:#f92672>[]</span>:Self-signed Root CA
+Email Address <span style=color:#f92672>[]</span>:
+
+$ ll
+total <span style=color:#ae81ff>16</span>
+-rw-r--r--  <span style=color:#ae81ff>1</span> hansuk  staff  <span style=color:#ae81ff>1033</span> Jan <span style=color:#ae81ff>14</span> 14:45 rootCA.crt
+-rw-------  <span style=color:#ae81ff>1</span> hansuk  staff  <span style=color:#ae81ff>1874</span> Jan <span style=color:#ae81ff>14</span> 14:30 rootCA.key
+</code></pre></div><p>상호작용하는 입력은 대충 해주어도 된다. 키 외에 crt 파일이 생긴걸 확인.</p>
+<h3 id=3-localhostsubject-csr-생성>3. localhost(subject) CSR 생성</h3>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ cat <span style=color:#e6db74>&lt;&lt; EOF &gt; localhost.csr.cnf
+</span><span style=color:#e6db74>&gt; [req]
+</span><span style=color:#e6db74>&gt; default_bits = 2048
+</span><span style=color:#e6db74>&gt; prompt = no
+</span><span style=color:#e6db74>&gt; default_md = sha256
+</span><span style=color:#e6db74>&gt; distinguished_name = dn
+</span><span style=color:#e6db74>&gt; 
+</span><span style=color:#e6db74>&gt; [dn]
+</span><span style=color:#e6db74>&gt; C=KR
+</span><span style=color:#e6db74>&gt; ST=Seoul
+</span><span style=color:#e6db74>&gt; L=Seocho-gu
+</span><span style=color:#e6db74>&gt; O=Localhost
+</span><span style=color:#e6db74>&gt; CN = localhost
+</span><span style=color:#e6db74>&gt; EOF</span>
+
+$ openssl req -new -sha256 -nodes -out localhost.csr -newkey rsa:2048 -keyout localhost.key -config localhost.csr.cnf
+...+......+.....+...+.+.........+............+...+..+......+.......+...+...+..+....+.....+.............+...+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*............+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.+..+.+...+......+.....+....+.....+...............+....+..+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+.+............+..+......+.+...+........+...+....+......+..+...+.........+..................+....+...+...+..+...+...+....+......+............+..+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*.......+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*..+.+...........+.......+.....+...+....+...+......+..+...+......+......+..................+.+......+.....+....+...+...+.........+....................+.+..+...+...+.......+...+............+..+...............+.+.........+...+........+.+.....+....+............+...+...........+...+......+....+........+...+......+.+...+.........+........+....+...+......+..+.............+......+........+.+..+...+......+...+..........+..+.............+......+.........+......+..+...+.+..............+.........+......+.+.....+...+...+.......+...+.....+..........+...+.........+...+..............+...+................+..+.........+.+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-----
+
+$ ll localhost.*
+-rw-r--r--  <span style=color:#ae81ff>1</span> hansuk  staff   <span style=color:#ae81ff>985</span> Jan <span style=color:#ae81ff>14</span> 14:53 localhost.csr
+-rw-r--r--  <span style=color:#ae81ff>1</span> hansuk  staff   <span style=color:#ae81ff>141</span> Jan <span style=color:#ae81ff>14</span> 14:52 localhost.csr.cnf
+-rw-------  <span style=color:#ae81ff>1</span> hansuk  staff  <span style=color:#ae81ff>1704</span> Jan <span style=color:#ae81ff>14</span> 14:53 localhost.key
+</code></pre></div><p>위에서 CA CSR 발급 시 상호작용으로 입력했던 common name과 같은 입력 값을 파일에 쓰고 인자로 준다.</p>
+<h3 id=4-localhost-인증서-생성>4. localhost 인증서 생성</h3>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ cat <span style=color:#e6db74>&lt;&lt; EOF &gt; v3.ext 
+</span><span style=color:#e6db74>&gt; authorityKeyIdentifier=keyid,issuer
+</span><span style=color:#e6db74>&gt; basicConstraints=CA:FALSE
+</span><span style=color:#e6db74>&gt; keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+</span><span style=color:#e6db74>&gt; subjectAltName = @alt_names
+</span><span style=color:#e6db74>&gt; 
+</span><span style=color:#e6db74>&gt; [alt_names]
+</span><span style=color:#e6db74>&gt; DNS.1 = localhost
+</span><span style=color:#e6db74>&gt; EOF</span>
+
+$ openssl x509 -req -in localhost.csr -CA rootCA.crt -CAkey rootCA.key -CAcreateserial -out localhost.pem -days <span style=color:#ae81ff>365</span> -sha256 -extfile v3.ext 
+Enter pass phrase <span style=color:#66d9ef>for</span> rootCA.key:
+
+$ openssl verify -CAfile rootCA.crt localhost.pem 
+localhost.pem: OK
+</code></pre></div><p>X509 v3 확장 명세를 정의하고 인증서를 발급한다. <code>alt_names</code> (Subject Alternative Name, SAN)필드에 <code>DNS.n</code>를 추가하면 인증서로 신뢰할 수 있는 도메인을 추가할 수 있다.</p>
+<h3 id=5-subject-서버-준비>5. subject 서버 준비</h3>
+<p>로컬 nginx에 인증서를 설치하여 인증을 테스트해본다. 먼저 인증서를 설치를 위한 시크릿과 설정맵도 만든다. 쿠버네티스는 <a href=https://kubernetes.io/ko/docs/concepts/configuration/secret/#tls-%EC%8B%9C%ED%81%AC%EB%A6%BF>TLS 타입에 대해 빌트인 시크릿</a>이 정의되어 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ kubectl create secret tls nginxsecret --key localhost.key --cert localhost.pem
+secret/nginxsecret created
+
+$ cat <span style=color:#e6db74>&lt;&lt; EOF &gt; default.conf
+</span><span style=color:#e6db74>&gt; server {
+</span><span style=color:#e6db74>&gt;         listen 80 default_server;
+</span><span style=color:#e6db74>&gt;         listen [::]:80 default_server ipv6only=on;
+</span><span style=color:#e6db74>&gt; 
+</span><span style=color:#e6db74>&gt;         listen 443 ssl;
+</span><span style=color:#e6db74>&gt; 
+</span><span style=color:#e6db74>&gt;         root /usr/share/nginx/html;
+</span><span style=color:#e6db74>&gt;         index index.html;
+</span><span style=color:#e6db74>&gt; 
+</span><span style=color:#e6db74>&gt;         server_name localhost;
+</span><span style=color:#e6db74>&gt;         ssl_certificate /etc/nginx/ssl/tls.crt;
+</span><span style=color:#e6db74>&gt;         ssl_certificate_key /etc/nginx/ssl/tls.key;
+</span><span style=color:#e6db74>&gt; 
+</span><span style=color:#e6db74>&gt;         location / {
+</span><span style=color:#e6db74>&gt;                 try_files $uri $uri/ =404;
+</span><span style=color:#e6db74>&gt;         }
+</span><span style=color:#e6db74>&gt; }
+</span><span style=color:#e6db74>&gt; EOF</span>
+
+$ kubectl create configmap nginxconfmap --from-file<span style=color:#f92672>=</span>default.conf
+configmap/nginxconfmap created
+</code></pre></div><p>만든 인증서를 설치할 nginx 컨테이너를 up 한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yml data-lang=yml><span style=color:#f92672>apiVersion</span>: <span style=color:#ae81ff>v1</span>
+<span style=color:#f92672>kind</span>: <span style=color:#ae81ff>Service</span>
+<span style=color:#f92672>metadata</span>:
+  <span style=color:#f92672>name</span>: <span style=color:#ae81ff>nginx-cert</span>
+  <span style=color:#f92672>labels</span>:
+    <span style=color:#f92672>app</span>: <span style=color:#ae81ff>nginx-cert</span>
+<span style=color:#f92672>spec</span>:
+  <span style=color:#f92672>type</span>: <span style=color:#ae81ff>NodePort</span>
+  <span style=color:#f92672>ports</span>:
+  - <span style=color:#f92672>port</span>: <span style=color:#ae81ff>80</span>
+    <span style=color:#f92672>protocol</span>: <span style=color:#ae81ff>TCP</span>
+    <span style=color:#f92672>name</span>: <span style=color:#ae81ff>http</span>
+    <span style=color:#f92672>nodePort</span>: <span style=color:#ae81ff>30080</span>
+  - <span style=color:#f92672>port</span>: <span style=color:#ae81ff>443</span>
+    <span style=color:#f92672>protocol</span>: <span style=color:#ae81ff>TCP</span>
+    <span style=color:#f92672>name</span>: <span style=color:#ae81ff>https</span>
+    <span style=color:#f92672>nodePort</span>: <span style=color:#ae81ff>30443</span>
+  <span style=color:#f92672>selector</span>:
+    <span style=color:#f92672>app</span>: <span style=color:#ae81ff>nginx-cert</span>
+---
+<span style=color:#f92672>apiVersion</span>: <span style=color:#ae81ff>apps/v1</span>
+<span style=color:#f92672>kind</span>: <span style=color:#ae81ff>Deployment</span>
+<span style=color:#f92672>metadata</span>:
+  <span style=color:#f92672>labels</span>:
+    <span style=color:#f92672>run</span>: <span style=color:#ae81ff>nginx-cert</span>
+  <span style=color:#f92672>name</span>: <span style=color:#ae81ff>nginx-cert</span>
+<span style=color:#f92672>spec</span>:
+  <span style=color:#f92672>replicas</span>: <span style=color:#ae81ff>1</span>
+  <span style=color:#f92672>selector</span>:
+    <span style=color:#f92672>matchLabels</span>:
+      <span style=color:#f92672>app</span>: <span style=color:#ae81ff>nginx-cert</span>
+  <span style=color:#f92672>template</span>:
+    <span style=color:#f92672>metadata</span>:
+      <span style=color:#f92672>labels</span>:
+        <span style=color:#f92672>app</span>: <span style=color:#ae81ff>nginx-cert</span>
+    <span style=color:#f92672>spec</span>:
+      <span style=color:#f92672>volumes</span>:
+      - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>secret-volume</span>
+        <span style=color:#f92672>secret</span>:
+          <span style=color:#f92672>secretName</span>: <span style=color:#ae81ff>nginxsecret</span>
+      - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>configmap-volume</span>
+        <span style=color:#f92672>configMap</span>:
+          <span style=color:#f92672>name</span>: <span style=color:#ae81ff>nginxconfmap</span>
+      <span style=color:#f92672>containers</span>:
+      - <span style=color:#f92672>image</span>: <span style=color:#ae81ff>nginx</span>
+        <span style=color:#f92672>name</span>: <span style=color:#ae81ff>nginx</span>
+        <span style=color:#f92672>ports</span>:
+        - <span style=color:#f92672>containerPort</span>: <span style=color:#ae81ff>80</span>
+        - <span style=color:#f92672>containerPort</span>: <span style=color:#ae81ff>443</span>
+        <span style=color:#f92672>volumeMounts</span>:
+        - <span style=color:#f92672>mountPath</span>: <span style=color:#ae81ff>/etc/nginx/ssl</span>
+          <span style=color:#f92672>name</span>: <span style=color:#ae81ff>secret-volume</span>
+        - <span style=color:#f92672>mountPath</span>: <span style=color:#ae81ff>/etc/nginx/conf.d</span>
+          <span style=color:#f92672>name</span>: <span style=color:#ae81ff>configmap-volume</span>
+</code></pre></div><h3 id=6-ssl-요청>6. SSL 요청</h3>
+<p>minikube 서비스 IP를 알아내어 openssl로 먼저 요청해본다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ minikube service --url nginx-cert -n cert
+http://192.168.64.2:30080
+http://192.168.64.2:30443
+
+
+$ openssl s_client -CAfile rootCA.crt -connect 192.168.64.2:30443 2&gt;/dev/null &lt; /dev/null
+CONNECTED<span style=color:#f92672>(</span>00000003<span style=color:#f92672>)</span>
+---
+Certificate chain
+ <span style=color:#ae81ff>0</span> s:C <span style=color:#f92672>=</span> KR, ST <span style=color:#f92672>=</span> Seoul, L <span style=color:#f92672>=</span> Seocho-gu, O <span style=color:#f92672>=</span> Localhost, CN <span style=color:#f92672>=</span> localhost
+   i:C <span style=color:#f92672>=</span> KR, ST <span style=color:#f92672>=</span> RootState, L <span style=color:#f92672>=</span> RootCity, O <span style=color:#f92672>=</span> Root Inc., OU <span style=color:#f92672>=</span> Root CA, CN <span style=color:#f92672>=</span> Self-signed Root CA
+   a:PKEY: rsaEncryption, <span style=color:#ae81ff>2048</span> <span style=color:#f92672>(</span>bit<span style=color:#f92672>)</span>; sigalg: RSA-SHA256
+   v:NotBefore: Jan <span style=color:#ae81ff>17</span> 03:37:15 <span style=color:#ae81ff>2022</span> GMT; NotAfter: Jan <span style=color:#ae81ff>17</span> 03:37:15 <span style=color:#ae81ff>2023</span> GMT
+---
+Server certificate
+-----BEGIN CERTIFICATE-----
+MIIDzzCCAregAwIBAgIUYMe6nRgsZwq9UPMKFgj9dt9z9FIwDQYJKoZIhvcNAQEL
+BQAweDELMAkGA1UEBhMCS1IxEjAQBgNVBAgMCVJvb3RTdGF0ZTERMA8GA1UEBwwI
+Um9vdENpdHkxEjAQBgNVBAoMCVJvb3QgSW5jLjEQMA4GA1UECwwHUm9vdCBDQTEc
+MBoGA1UEAwwTU2VsZi1zaWduZWQgUm9vdCBDQTAeFw0yMjAxMTcwMzM3MTVaFw0y
+MzAxMTcwMzM3MTVaMFkxCzAJBgNVBAYTAktSMQ4wDAYDVQQIDAVTZW91bDESMBAG
+A1UEBwwJU2VvY2hvLWd1MRIwEAYDVQQKDAlMb2NhbGhvc3QxEjAQBgNVBAMMCWxv
+Y2FsaG9zdDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALc9retjBorw
+RKbuyC1SNx1U9L5LJPPbBkBh4kg98saQxtRX0Wqs5mgswWMZYL3E6yRl0gfwBkdq
+t8GVQ49dgg0QO5MbG9ylfCLS9xR3WWjAgxaDJ0W96PyvTzmg295aqqHFKPSaG/nM
+JyZgFJDuGoRRgwoWNqZ1pRCDLMIENDx4qgjOnQch529pM9ZRwFQSswKpn4BVkY00
+/u8jIvax67kFOg70QGY16paGEg7YfSNle7BFZY0VJ8rIiBoqwRmPH6hbF/djxe5b
+yzkI9eqts9bqw8eDLC28S36x62FxkdqkK8pI/rzWAKSV43TWML1zq4vM2bI+vp0k
+a06GhSsS1bUCAwEAAaNwMG4wHwYDVR0jBBgwFoAUURHNpOE9zTgXgVYAGvLt94Ym
+P+8wCQYDVR0TBAIwADALBgNVHQ8EBAMCBPAwFAYDVR0RBA0wC4IJbG9jYWxob3N0
+MB0GA1UdDgQWBBSS1ZHHT6OHTomYIRsmhz6hMJLGnDANBgkqhkiG9w0BAQsFAAOC
+AQEAWA23pCdAXtAbdSRy/p8XURCjUDdhkp3MYA+1gIDeGAQBKNipU/KEo5wO+aVk
+AG6FryPZLOiwiP8nYAebUxOAqKG3fNbgT9t95BEGCip7Cxjp96KNYt73Kl/OTPjJ
+KZUkHQ7MXN4vc5gmca8q+OqwCCQ/daMkzLabPQWNk3R/Hzo/mT42v8ht9/nVh1Ml
+u3Dow5QPp8LESrJABLIRyRs0+Tfp+WodgekgDX5hnkkSk77+oXB49r2tZUeG/CVv
+Fg8PuUNi+DWpdxX8fE/gIbSzSsamOf29+0sCIoJEPvk7lEVLt9ca0SoJ7rKn/ai4
+HxwTiYo9pNcoLwhH3xdXjvbuGA<span style=color:#f92672>==</span>
+-----END CERTIFICATE-----
+subject<span style=color:#f92672>=</span>C <span style=color:#f92672>=</span> KR, ST <span style=color:#f92672>=</span> Seoul, L <span style=color:#f92672>=</span> Seocho-gu, O <span style=color:#f92672>=</span> Localhost, CN <span style=color:#f92672>=</span> localhost
+issuer<span style=color:#f92672>=</span>C <span style=color:#f92672>=</span> KR, ST <span style=color:#f92672>=</span> RootState, L <span style=color:#f92672>=</span> RootCity, O <span style=color:#f92672>=</span> Root Inc., OU <span style=color:#f92672>=</span> Root CA, CN <span style=color:#f92672>=</span> Self-signed Root CA
+---
+No client certificate CA names sent
+Peer signing digest: SHA256
+Peer signature type: RSA-PSS
+Server Temp Key: X25519, <span style=color:#ae81ff>253</span> bits
+---
+SSL handshake has read <span style=color:#ae81ff>1620</span> bytes and written <span style=color:#ae81ff>390</span> bytes
+Verification: OK
+---
+New, TLSv1.2, Cipher is ECDHE-RSA-AES256-GCM-SHA384
+Server public key is <span style=color:#ae81ff>2048</span> bit
+Secure Renegotiation IS supported
+Compression: NONE
+Expansion: NONE
+No ALPN negotiated
+SSL-Session:
+    Protocol  : TLSv1.2
+    Cipher    : ECDHE-RSA-AES256-GCM-SHA384
+    Session-ID: 00C994177DCF3DA424433CD0EDB33FF54C1198D0DE2C08D61BBD155D85890F20
+    Session-ID-ctx: 
+    Master-Key: B88A94A3556F9A595B3B395E0F4701290D3837BC49CA125CA25E0351261E7C59F0DF0928B4A12E33509B38B2F2684711
+    PSK identity: None
+    PSK identity hint: None
+    SRP username: None
+    TLS session ticket lifetime hint: <span style=color:#ae81ff>300</span> <span style=color:#f92672>(</span>seconds<span style=color:#f92672>)</span>
+    TLS session ticket:
+    <span style=color:#ae81ff>0000</span> - 5d <span style=color:#ae81ff>96</span> c8 cf 8f 9c 9f c4-15 <span style=color:#ae81ff>25</span> b9 <span style=color:#ae81ff>57</span> <span style=color:#ae81ff>56</span> <span style=color:#ae81ff>13</span> ec 9d   <span style=color:#f92672>]</span>........%.WV...
+    <span style=color:#ae81ff>0010</span> - 2a <span style=color:#ae81ff>26</span> f8 e5 <span style=color:#ae81ff>09</span> e4 <span style=color:#ae81ff>01</span> 11-fa <span style=color:#ae81ff>59</span> <span style=color:#ae81ff>25</span> a1 6c e7 ba <span style=color:#ae81ff>94</span>   *&amp;.......Y%.l...
+    <span style=color:#ae81ff>0020</span> - <span style=color:#ae81ff>85</span> b2 6c <span style=color:#ae81ff>49</span> b1 1f <span style=color:#ae81ff>78</span> 6c-4c b1 ed b1 af 1b ce <span style=color:#ae81ff>46</span>   ..lI..xlL......F
+    <span style=color:#ae81ff>0030</span> - c6 f1 bd f8 <span style=color:#ae81ff>36</span> da b0 c4-31 ce ba <span style=color:#ae81ff>62</span> <span style=color:#ae81ff>72</span> 4b <span style=color:#ae81ff>76</span> a1   ....6...1..brKv.
+    <span style=color:#ae81ff>0040</span> - 2d d4 b6 8d cb c3 <span style=color:#ae81ff>39</span> ee-8f <span style=color:#ae81ff>05</span> <span style=color:#ae81ff>77</span> <span style=color:#ae81ff>48</span> 9e <span style=color:#ae81ff>61</span> 3e 4a   -.....9...wH.a&gt;J
+    <span style=color:#ae81ff>0050</span> - 2c 6b f4 <span style=color:#ae81ff>19</span> <span style=color:#ae81ff>59</span> f4 <span style=color:#ae81ff>93</span> cf-bd d7 <span style=color:#ae81ff>16</span> <span style=color:#ae81ff>76</span> ce af <span style=color:#ae81ff>48</span> b5   ,k..Y......v..H.
+    <span style=color:#ae81ff>0060</span> - b7 cc c2 aa 9b <span style=color:#ae81ff>36</span> <span style=color:#ae81ff>44</span> b5-93 4e 1e 8a <span style=color:#ae81ff>96</span> 6c e7 <span style=color:#ae81ff>96</span>   .....6D..N...l..
+    <span style=color:#ae81ff>0070</span> - b5 0e <span style=color:#ae81ff>04</span> <span style=color:#ae81ff>96</span> <span style=color:#ae81ff>77</span> d7 df 2a-ef <span style=color:#ae81ff>70</span> ad c1 7b <span style=color:#ae81ff>82</span> a9 3a   ....w..*.p..<span style=color:#f92672>{</span>..:
+    <span style=color:#ae81ff>0080</span> - 5c 9b 4a <span style=color:#ae81ff>94</span> fb ea dc de-15 <span style=color:#ae81ff>11</span> fa 3b e1 af dd cf   <span style=color:#ae81ff>\.</span>J........;....
+    <span style=color:#ae81ff>0090</span> - <span style=color:#ae81ff>57</span> <span style=color:#ae81ff>48</span> <span style=color:#ae81ff>98</span> ed c8 d7 6b 5d-00 c3 <span style=color:#ae81ff>84</span> 5f <span style=color:#ae81ff>86</span> 0c a8 b5   WH....k<span style=color:#f92672>]</span>..._....
+    00a0 - <span style=color:#ae81ff>18</span> <span style=color:#ae81ff>66</span> <span style=color:#ae81ff>52</span> <span style=color:#ae81ff>14</span> c4 9c b0 ff-0b <span style=color:#ae81ff>39</span> <span style=color:#ae81ff>12</span> b6 0a <span style=color:#ae81ff>78</span> <span style=color:#ae81ff>49</span> 4d   .fR......9...xIM
+
+    Start Time: <span style=color:#ae81ff>1644478485</span>
+    Timeout   : <span style=color:#ae81ff>7200</span> <span style=color:#f92672>(</span>sec<span style=color:#f92672>)</span>
+    Verify <span style=color:#66d9ef>return</span> code: <span style=color:#ae81ff>0</span> <span style=color:#f92672>(</span>ok<span style=color:#f92672>)</span>
+    Extended master secret: yes
+---
+</code></pre></div><p>브라우저에서도 확인해본다. openssl 요청 시 CAfile 옵션으로 CA 인증서를 넘겨 주었지만, 브라우저 요청에 적용하기 위해선 맥 시스템 키체인에 추가해야한다. 신뢰 탭을 펼쳐 이 인증서 사용 시 <strong>항상 신뢰</strong>로 변경하자:
+<img src=/images/self-signed-certificate/1.gif alt=1></p>
+<p><img src=/images/self-signed-certificate/2.png alt=2></p>
+<ul>
+<li><a href=https://kubernetes.io/ko/docs/tasks/administer-cluster/certificates/>쿠버네티스 공식 문서에도 self-signed certificate를 설명하는 글</a>이 있다. CKA를 준비하며 알게 된것인데, 쿠버네티스는 클러스터 사용자 인증에 TLS 인증을 사용한다. 인증서 요청 승인, 발급 등의 과정은 kubectl로 더 간단하게 할 수 있지만 CSR 생성은 위와 같은 방법으로도 하고, openssl이 아닌 다른 도구를 쓰기도 한다.
+<ul>
+<li>아무튼 나는 openssl로 self-signed certificate 해본 것이 CKA 시험 보는데에도 큰 도움이 됐다.</li>
+<li>openssl 뿐만 아니라 인증서 발급할 수 있는 다른 여러 도구가 있다. 하지만 openssl로 연습해보길 잘했다. 가장 기초가 되는 도구 같다.</li>
+</ul>
+</li>
+<li>nginx 설정에서 헤맸는데 스택오버플로에서 도움을 받아 해결했다: <a href=https://stackoverflow.com/questions/70830744/nginx-pod-responds-with-its-listening-port-in-self-signed-certificate-examples>https://stackoverflow.com/questions/70830744/nginx-pod-responds-with-its-listening-port-in-self-signed-certificate-examples</a></li>
+</ul>
+<h3 id=참고>참고</h3>
+<ul>
+<li><a href=https://baek9.github.io/security/2019/04/10/https%EC%9D%98_%EC%9B%90%EB%A6%AC,_%EA%B7%B8%EB%A6%AC%EA%B3%A0_Self-signed-SSL_%EA%B9%8C%EC%A7%80.html>https의 원리, 그리고 Self-signed SSL 까지</a></li>
+<li><a href=https://www.lesstif.com/system-admin/openssl-root-ca-ssl-6979614.html>OpenSSL 로 ROOT CA 생성 및 SSL 인증서 발급</a></li>
+<li><a href=https://kubernetes.io/ko/docs/concepts/services-networking/connect-applications-service/>서비스와 애플리케이션 연결하기</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
