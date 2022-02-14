@@ -1,0 +1,286 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>웹 서버/리버스 프록시로서 nginx 설정 구조(HTTP) | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>웹 서버/리버스 프록시로서 nginx 설정 구조(HTTP)</h2>
+<small class=date>Mon Feb 14, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/nginx class=tag>nginx</a>
+</div>
+</div>
+<div class=content><p>nginx 설정을 바꾸고 재적용(reload) 전 테스트 시 오류를 본적이 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ sudo nginx -t -c /path/to/nginx.conf 
+nginx: <span style=color:#f92672>[</span>emerg<span style=color:#f92672>]</span> <span style=color:#e6db74>&#34;upstream&#34;</span> directive is not allowed here in /path/to/nginx.conf:6
+</code></pre></div><p>upstream 디렉티브는 원래부터 저 위치에 있었고, 다른 컨텍스트 내부를 수정한거라 원인이 뭔지 몰랐다. 과거에 이렇게 잘 몰랐다가 nginx 설정을 파싱할 일이 있어 해보았는데 같은 에러를 만났다. 따라서, 제대로 공부한적 없는, nginx 설정에 대해 한번 정리해본다(디렉티브 및 컨텍스트는 회사에서 쓰고 있는 것만 정리했다).</p>
+<h2 id=기본-설정-파일>기본 설정 파일</h2>
+<p>nginx는 설정을 읽어 오는 기본 파일 경로가 있다:</p>
+<ul>
+<li>/etc/nginx/nginx.conf</li>
+<li>/usr/local/nginx/conf/nginx.conf</li>
+<li>/usr/local/etc/nginx/nginx.conf</li>
+</ul>
+<p>패키지, 배포판에 따라 조금씩 다르다. 루트 권한으로 apt 패키지 설치한 우분투에선 가장 첫번째 파일이고, brew 로 설치한 로컬 맥에선 가장 마지막 파일이다.</p>
+<p>그리고 한 파일에서 다른 설정 파일을 참조할 수 있는 <a href=http://nginx.org/en/docs/ngx_core_module.html#include>include 디렉티브</a>가 있다. 이것이 내가 만난 문제 에러에 대한 원인이자 스포인데, /path/to/nginx.conf 파일은 단독적으론 불완전한 설정이고 include 디렉티브 컨텍스트 내에 삽입되어야 오류가 없는 설정이 된다(아직 디렉티브, 컨텍스트 등이 무얼 의미하는지 설명하지 않았다. 이를 설명하고 뒤에서 한번 더 정리한다).</p>
+<h2 id=디렉티브>디렉티브</h2>
+<p>설정의 기본 구성 요소인 디렉티브는 크게 두가지로 나뉜다.</p>
+<ul>
+<li>단순 디렉티브(simple, single-line): 한줄에 세미콜론으로 끝난다. 디렉티브와 인수들(arguments) 순서로 쓰임.</li>
+<li>블록 디렉티브: 디렉티브 뒤 중괄호(<code>{}</code>)로 표시된 블록이 있다. 블록은 새로운 컨텍스트이고 컨텍스트마다 쓰일 수 있는 디렉티브가 정해져 있다. 디렉티브 중엔 컨텍스트로 상속되는 것들도 있다. 특정 디렉티브의 블록을 특정 컨텍스트로 지칭한다.</li>
+</ul>
+<p>아무것도 없는 설정 파일 최상단은 core 또는 main 컨텍스트이다. 여기엔 전역과 관련한 디렉티브를 정의한다(운영체제 사용자, 워커 개수, pid 파일 등):</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># main(core) context</span>
+user nginx;
+worker_processes 8;
+pid /run/nginx.pid;
+...
+
+</code></pre></div><p>이 main 컨텍스트에만 위치할 수 있는 몇 개의 컨텍스트가 있다.</p>
+<h2 id=이벤트-컨텍스트>이벤트 컨텍스트</h2>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># main(core) context</span>
+events <span style=color:#f92672>{</span>
+	<span style=color:#75715e># events context</span>
+	use epoll;
+  worker_connections 1000;
+  multi_accept on;
+  ...
+<span style=color:#f92672>}</span>
+</code></pre></div><p>nginx는 이벤트 기반 연결 프로세싱 모델이다. 워커 프로세스의 연결 처리 관련한 디렉티브를 정의한다:</p>
+<ul>
+<li><a href=http://nginx.org/en/docs/ngx_core_module.html#use><code>use</code></a>: 연결 방법(methods)</li>
+<li><a href=http://nginx.org/en/docs/ngx_core_module.html#worker_connections><code>worker_connections</code></a>: 워커당 연결 수</li>
+<li><a href=http://nginx.org/en/docs/ngx_core_module.html#multi_accept><code>multi_accept</code></a>: 연결 처리 중 대기(pending) 연결도 받을 것인지</li>
+</ul>
+<h2 id=http-컨텍스트>HTTP 컨텍스트</h2>
+<p>모든 HTTP/HTTPS 처리 관련한 디렉티브를 정의하는 컨텍스트. nginx를 주 용도인, 웹 서버나 리버스 프록시로 사용한다면, 가장 주요하게 쓰이는 컨텍스트이다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># main context</span>
+
+events <span style=color:#f92672>{</span>
+  <span style=color:#75715e># events context</span>
+  ...
+<span style=color:#f92672>}</span>
+
+http <span style=color:#f92672>{</span>
+  <span style=color:#75715e># http context</span>
+  ...
+<span style=color:#f92672>}</span>
+</code></pre></div><p>http 컨텍스트 안엔 각 요청을 처리하는 가상 서버(virtual server)이자, server 컨텍스트가 정의된다. 모든 가상 서버에 적용되는 디렉티브는 여기에 정의하여 상속되도록 한다. 예를 들면:</p>
+<ul>
+<li>로그 파일 위치
+<ul>
+<li><a href=http://nginx.org/en/docs/ngx_core_module.html#error_log><code>error_log</code></a></li>
+<li><a href=https://nginx.org/en/docs/http/ngx_http_log_module.html#access_log><code>access_log</code></a></li>
+<li>&mldr;</li>
+</ul>
+</li>
+<li>TCP keepalive 연결 설정
+<ul>
+<li><a href=https://nginx.org/en/docs/http/ngx_http_core_module.html#keepalive_requests><code>keepalive_requests</code></a></li>
+<li><a href=https://nginx.org/en/docs/http/ngx_http_core_module.html#keepalive_timeout><code>keepalive_timeout</code></a></li>
+</ul>
+</li>
+<li>압축
+<ul>
+<li><a href=https://nginx.org/en/docs/http/ngx_http_gzip_module.html#gzip><code>gzip</code></a></li>
+</ul>
+</li>
+<li>&mldr;</li>
+</ul>
+<p>위 디렉티브는 각 가상 서버 내에서 재정의(overwrite) 될 수 있고 기본 값으로 정의된다.</p>
+<h2 id=서버-컨텍스트>서버 컨텍스트</h2>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># main context</span>
+
+http <span style=color:#f92672>{</span>
+    <span style=color:#75715e># http context</span>
+  server <span style=color:#f92672>{</span>
+    <span style=color:#75715e># first server context</span>
+  <span style=color:#f92672>}</span>
+
+  server <span style=color:#f92672>{</span>
+    <span style=color:#75715e># second server context</span>
+  <span style=color:#f92672>}</span>
+  ...
+<span style=color:#f92672>}</span>
+</code></pre></div><p>http 컨텍스트 내에 나란히 여러 개 정의할 수 있는 컨텍스트이고 가상 서버라고도 한다. 각 가상 서버가 전체 http 요청의 일부를 처리한다. nginx는 다음 두 디렉티브로 요청이 처리될 가상 서버를 고른다:</p>
+<ul>
+<li><a href=http://nginx.org/en/docs/http/ngx_http_core_module.html#listen><code>listen</code></a>: IP + 포트</li>
+<li><a href=http://nginx.org/en/docs/http/ngx_http_core_module.html#server_name><code>server_name</code></a>: Host 헤더와 매칭, <code>listen</code>에 매칭되는 가상 서버가 여러 개일 때 사용하는 필터. http 컨텍스트에서 상속되는 디렉티브.</li>
+</ul>
+<p>서버 컨텍스트 내엔 URI로 분기하는 여러 로케이션 컨텍스트를 정의할 수 있다.</p>
+<h2 id=로케이션-컨텍스트>로케이션 컨텍스트</h2>
+<p>서버 컨텍스트 내에 정의되는 컨텍스트. 서버처럼 여러 컨텍스트를 정의할 수 있고 반면에 서버와 달리 중첩(nested) 정의가 가능하다. 서버가 말 그대로 서버(=호스트, 포트도 포함하지만)를 찾는 일이라면, 그 서버 내에서 경로, 요청 URI,를 특정하는 컨텍스트이다. 중첩이 가능하기 때문에 공통 경로 처리에 대해 sumup 할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>location &lt;match_modifier&gt; &lt;uri&gt; | @&lt;name&gt; <span style=color:#f92672>{</span>
+  ...
+<span style=color:#f92672>}</span>
+
+
+<span style=color:#75715e># main context</span>
+
+server <span style=color:#f92672>{</span>
+  <span style=color:#75715e># server context</span>
+
+  location /match/criteria <span style=color:#f92672>{</span>
+    <span style=color:#75715e># first location context</span>
+  <span style=color:#f92672>}</span>
+
+  location /other/criteria <span style=color:#f92672>{</span>
+    <span style=color:#75715e># second location context</span>
+
+    location nested_match <span style=color:#f92672>{</span>
+      <span style=color:#75715e># first nested location</span>
+    <span style=color:#f92672>}</span>
+
+    location other_nested <span style=color:#f92672>{</span>
+      <span style=color:#75715e># second nested location</span>
+    <span style=color:#f92672>}</span>
+  <span style=color:#f92672>}</span>
+
+<span style=color:#f92672>}</span>
+</code></pre></div><p><a href=http://nginx.org/en/docs/http/ngx_http_core_module.html#location><code>location</code> 디렉티브</a></p>
+<p>match modifier는 안 쓰이거나(optional) 다음 네가지로 매칭한다:</p>
+<ul>
+<li>(none): 접두사(prefix) 매칭</li>
+<li><code>=</code>: 정확한(exact) 매칭</li>
+<li><code>~</code>: case-sensitive 정규표현식 매칭</li>
+<li><code>~*</code>: case-insensitive 정규표현식 매칭</li>
+<li><code>^~</code>: 최적의 비정규표현식에 매칭? (if this block is selected as the best non-regular expression match, regular expression matching will not take place.)</li>
+</ul>
+<p>마지막 설명은 이해하지 못했다. 하지만 modifier 외에 로케이션 디렉티브 순서에 따른 우선순위나 nginx의 매칭 알고리즘이 따로 있고 이는 이 포스팅에서 다루려는 범위를 넘어가서 일단 신경 쓰지 않았다(나중에 <a href=https://www.digitalocean.com/community/tutorials/understanding-nginx-server-and-location-block-selection-algorithms>Understanding Nginx Server and Location Block Selection Algorithms</a>의 내용도 정리해보자).</p>
+<p>또 단순히 <code>@&lt;name></code>만 써서 해당 블록으로 요청을 보낼 수도 있다. 회사에선, 이어서 설명할, 업스트림 컨텍스트의 이름을 <code>@</code> prefix로 정의하여 사용하고 있다. 로케이션에서 <code>@&lt;name></code> 사용 시 이는 redirection이 아닌 요청이 되고, 중첩 로케이션에서 쓰거나 이 컨텍스트에 로케이션 컨텍스트를 중첩시킬 수 없다.</p>
+<h2 id=업스트림-컨텍스트>업스트림 컨텍스트</h2>
+<p>nginx가 요청을 프록시 할 수 있는 서버 풀을 업스트림이라 하며 이를 정의하는 블록 디렉티브이다. http 컨텍스트 밑에, server 컨텍스트와 나란히 정의되고 서버나 로케이션에서 이름을 참조하여 요청할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># main context</span>
+
+http <span style=color:#f92672>{</span>
+  <span style=color:#75715e># http context</span>
+
+  upstream @&lt;upstream_name&gt; <span style=color:#f92672>{</span>
+    <span style=color:#75715e># upstream context</span>
+    server &lt;proxy_server1&gt;;
+    server &lt;proxy_server2&gt;;
+    ...
+  <span style=color:#f92672>}</span>
+
+  server <span style=color:#f92672>{</span>
+    <span style=color:#75715e># server context</span>
+    location @&lt;upstream_name&gt; <span style=color:#f92672>{</span>
+      <span style=color:#75715e># location context</span>
+      <span style=color:#75715e># @&lt;upstream_name&gt; 업스트림으로 요청을 프록시 함</span>
+    <span style=color:#f92672>}</span>
+  <span style=color:#f92672>}</span>
+
+<span style=color:#f92672>}</span>
+</code></pre></div><h2 id=정리>정리</h2>
+<p>웹 서버나 리버스 프록시로서 nginx 설정 구조(=컨텍스트 트리)는 다음과 같다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># main context</span>
+...
+events <span style=color:#f92672>{</span>
+  <span style=color:#75715e># events context</span>
+  ...
+<span style=color:#f92672>}</span>
+
+http <span style=color:#f92672>{</span>
+  <span style=color:#75715e># http context</span>
+  ...
+  upstream @upstream1 <span style=color:#f92672>{</span>
+    <span style=color:#75715e># upstream context</span>
+    server proxy_server1;
+    server proxy_server2;
+    ...
+  <span style=color:#f92672>}</span>
+
+  server <span style=color:#f92672>{</span>
+    <span style=color:#75715e># server context</span>
+    location @upstream1 <span style=color:#f92672>{</span>
+      <span style=color:#75715e># location context</span>
+    <span style=color:#f92672>}</span>
+
+    location /match/criteria <span style=color:#f92672>{</span>
+      <span style=color:#75715e># first location context</span>
+    <span style=color:#f92672>}</span>
+
+    location /other/criteria <span style=color:#f92672>{</span>
+      <span style=color:#75715e># second location context</span>
+
+      location nested_match <span style=color:#f92672>{</span>
+        <span style=color:#75715e># first nested location</span>
+      <span style=color:#f92672>}</span>
+
+      location other_nested <span style=color:#f92672>{</span>
+        <span style=color:#75715e># second nested location</span>
+      <span style=color:#f92672>}</span>
+    <span style=color:#f92672>}</span>
+  <span style=color:#f92672>}</span>
+
+  server <span style=color:#f92672>{</span>
+
+  <span style=color:#f92672>}</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><ul>
+<li>최상위 main 컨텍스트엔 event, http 컨텍스트가 정의되어 있다.</li>
+<li>http 컨텍스트엔 upstream과 가상 서버(server) 컨텍스트가 중첩 없이 정의되어 있다.</li>
+<li>가상 서버 내엔 location 컨텍스트가 중첩 가능하게 정의되어 있다.</li>
+</ul>
+<p>include 디렉티브는 다른 파일로 설정을 확장할 수 있다. 나의 경우 http 에서 확장 할 수 있는 upstream 및 가상 서버를 별도 파일에서 정의하고 있었다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># /etc/nginx/nginx.conf</span>
+<span style=color:#75715e># main context</span>
+...
+events <span style=color:#f92672>{</span>
+  <span style=color:#75715e># events context</span>
+  ...
+<span style=color:#f92672>}</span>
+
+http <span style=color:#f92672>{</span>
+  <span style=color:#75715e># http context</span>
+  include /path/to/nginx.conf
+  ...
+<span style=color:#f92672>}</span>
+
+<span style=color:#75715e># /path/to/nginx.conf</span>
+upstream @upstream1 <span style=color:#f92672>{</span>
+  <span style=color:#75715e># upstream context</span>
+  server proxy_server1;
+  server proxy_server2;
+  ...
+<span style=color:#f92672>}</span>
+...
+
+server <span style=color:#f92672>{</span>
+  <span style=color:#75715e># server context</span>
+  ...
+<span style=color:#f92672>}</span>
+...
+</code></pre></div><p>그래서 설정 테스트 시 main 컨텍스트에 위치할 수 없는 upstream 디렉티브가 있어서 오류가 났다.</p>
+<p>event, http, server, location, upstream의 named 디렉티브 중심으로 nginx 설정의 큰 구조를 살펴봤다. 각 컨텍스트가 위치해야하는 곳과 컨텍스트에서 사용 가능한 또는 상속할 수 있는 디렉티브가 미리 설계되어 있다. 하지만 nginx 설정 구조를 더 단순화하면 그저 디렉티브의 트리 구조이다. 블록 디렉티브일 경우 하위 디렉티브들을 포함하는 디렉티브의 트리구조가 루트(main 컨텍스트)부터 계속 이어지는 단순한 구조이다. 이 점을 이용해 nginx 설정을 JSON으로 파싱할 수 있다. 또 이를 이해하고 있으면 파싱한 JSON을 분석하는데 활용할 수 있다.</p>
+<p>또 문서를 참고하여 디렉티브를 확인하다 보니 같은 컨텍스트라도 속한 모듈이 다 달랐다(그리고 모듈은 디렉티브의 상속 여부와도 연관 있어 보였다). 다음엔 nginx 모듈과 디렉티브 상속에 대해서도 정리해봐야겠다.</p>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://www.digitalocean.com/community/tutorials/understanding-the-nginx-configuration-file-structure-and-configuration-contexts#apply-directives-in-the-highest-context-available>Understanding the Nginx Configuration File Structure and Configuration Contexts</a></li>
+<li><a href=http://nginx.org/en/docs/ngx_core_module.html>http://nginx.org/en/docs/ngx_core_module.html</a></li>
+<li><a href=https://gonna-be.tistory.com/20>[NGINX] 꼭 알아야 할 configuration 기초 개념!</a></li>
+<li><a href=https://docs.nginx.com/nginx/admin-guide/basic-functionality/managing-configuration-files/>https://docs.nginx.com/nginx/admin-guide/basic-functionality/managing-configuration-files/</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
