@@ -1,0 +1,261 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>MariaDB semi-join과 구체화 뷰 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>MariaDB semi-join과 구체화 뷰</h2>
+<small class=date>Wed Feb 16, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/mariadb class=tag>mariadb</a>
+<a href=https://flavono123.github.io/tags/relationaldb class=tag>relationaldb</a>
+</div>
+</div>
+<div class=content><p><a href=https://mariadb.com/kb/en/>MariaDB Knowledge Base</a> 다음 두 포스트를 따라하며 semi-join과 구체화 뷰 대해 이해한 점을 정리한다:</p>
+<ul>
+<li><a href=https://mariadb.com/kb/en/semi-join-subquery-optimizations/>https://mariadb.com/kb/en/semi-join-subquery-optimizations/</a></li>
+<li><a href=https://mariadb.com/kb/en/semi-join-materialization-strategy/>https://mariadb.com/kb/en/semi-join-materialization-strategy/</a></li>
+</ul>
+<p>한번씩 읽어야 이 글도 이해가 빠를것 같다.</p>
+<p>원랜 회사에서 겪은 DB 이슈를 공유하고 싶었는데, 한번에 글로 정리가 안되어 쪼개어 쓴다(DB 이슈는 이 글을 참고해서 이어서 쓸 예정이다).</p>
+<h2 id=준비>준비</h2>
+<p>우선 Homebrew로 받은 MariaDB 10.3.32에서 테스트했다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ mysql --version
+mysql  Ver 15.1 Distrib 10.3.32-MariaDB, <span style=color:#66d9ef>for</span> osx10.16 <span style=color:#f92672>(</span>x86_64<span style=color:#f92672>)</span> using readline 5.1
+</code></pre></div><p>MariaDB Knowlege Base(kb)의 쿼리를 따라하기 위해 샘플 데이터를 받는다. <a href=https://downloads.mysql.com/docs/world_x-db.tar.gz>world</a>라는 DB인데, 데이터가 kb에 써 있는것과 완전 같진 않지만(kb가 업데이트 안된걸 수도 있다), <em>얼추</em> 비슷하다. 발견한 과정은 <a href=https://dba.stackexchange.com/questions/307550/sample-data-for-mariadb-knowledge-base>여기</a>에 자문자답했다.</p>
+<p>다운 받고 압축을 풀었으면 root 계정으로 덤프한다. 파라미터 바꿀 일도 있으니 로컬에서 root 계정을 사용했다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>mysql -uroot &lt; world.sql 
+</code></pre></div><p>그리고 <code>city.Population</code>에 인덱스를 추가한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql>use world;
+<span style=color:#66d9ef>CREATE</span> <span style=color:#66d9ef>INDEX</span> Population <span style=color:#66d9ef>ON</span> city (population);
+</code></pre></div><p>그럼 실습에서 사용할 <code>city</code> 와 <code>country</code> 테이블 덤프는 다음과 같다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql><span style=color:#66d9ef>CREATE</span> <span style=color:#66d9ef>TABLE</span> <span style=color:#f92672>`</span>city<span style=color:#f92672>`</span> (
+  <span style=color:#f92672>`</span>ID<span style=color:#f92672>`</span> int(<span style=color:#ae81ff>11</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> AUTO_INCREMENT,
+  <span style=color:#f92672>`</span>Name<span style=color:#f92672>`</span> char(<span style=color:#ae81ff>35</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#e6db74>&#39;&#39;</span>,
+  <span style=color:#f92672>`</span>CountryCode<span style=color:#f92672>`</span> char(<span style=color:#ae81ff>3</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#e6db74>&#39;&#39;</span>,
+  <span style=color:#f92672>`</span>District<span style=color:#f92672>`</span> char(<span style=color:#ae81ff>20</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#e6db74>&#39;&#39;</span>,
+  <span style=color:#f92672>`</span>Population<span style=color:#f92672>`</span> int(<span style=color:#ae81ff>11</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#ae81ff>0</span>,
+  <span style=color:#66d9ef>PRIMARY</span> <span style=color:#66d9ef>KEY</span> (<span style=color:#f92672>`</span>ID<span style=color:#f92672>`</span>),
+  <span style=color:#66d9ef>KEY</span> <span style=color:#f92672>`</span>CountryCode<span style=color:#f92672>`</span> (<span style=color:#f92672>`</span>CountryCode<span style=color:#f92672>`</span>),
+  <span style=color:#66d9ef>KEY</span> <span style=color:#f92672>`</span>Population<span style=color:#f92672>`</span> (<span style=color:#f92672>`</span>Population<span style=color:#f92672>`</span>),
+  <span style=color:#66d9ef>CONSTRAINT</span> <span style=color:#f92672>`</span>city_ibfk_1<span style=color:#f92672>`</span> <span style=color:#66d9ef>FOREIGN</span> <span style=color:#66d9ef>KEY</span> (<span style=color:#f92672>`</span>CountryCode<span style=color:#f92672>`</span>) <span style=color:#66d9ef>REFERENCES</span> <span style=color:#f92672>`</span>country<span style=color:#f92672>`</span> (<span style=color:#f92672>`</span>Code<span style=color:#f92672>`</span>)
+) ENGINE<span style=color:#f92672>=</span>InnoDB AUTO_INCREMENT<span style=color:#f92672>=</span><span style=color:#ae81ff>4080</span> <span style=color:#66d9ef>DEFAULT</span> CHARSET<span style=color:#f92672>=</span>utf8mb4;
+
+<span style=color:#66d9ef>CREATE</span> <span style=color:#66d9ef>TABLE</span> <span style=color:#f92672>`</span>country<span style=color:#f92672>`</span> (
+  <span style=color:#f92672>`</span>Code<span style=color:#f92672>`</span> char(<span style=color:#ae81ff>3</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#e6db74>&#39;&#39;</span>,
+  <span style=color:#f92672>`</span>Name<span style=color:#f92672>`</span> char(<span style=color:#ae81ff>52</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#e6db74>&#39;&#39;</span>,
+  <span style=color:#f92672>`</span>Continent<span style=color:#f92672>`</span> enum(<span style=color:#e6db74>&#39;Asia&#39;</span>,<span style=color:#e6db74>&#39;Europe&#39;</span>,<span style=color:#e6db74>&#39;North America&#39;</span>,<span style=color:#e6db74>&#39;Africa&#39;</span>,<span style=color:#e6db74>&#39;Oceania&#39;</span>,<span style=color:#e6db74>&#39;Antarctica&#39;</span>,<span style=color:#e6db74>&#39;South America&#39;</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#e6db74>&#39;Asia&#39;</span>,
+  <span style=color:#f92672>`</span>Region<span style=color:#f92672>`</span> char(<span style=color:#ae81ff>26</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#e6db74>&#39;&#39;</span>,
+  <span style=color:#f92672>`</span>SurfaceArea<span style=color:#f92672>`</span> decimal(<span style=color:#ae81ff>10</span>,<span style=color:#ae81ff>2</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#ae81ff>0</span>.<span style=color:#ae81ff>00</span>,
+  <span style=color:#f92672>`</span>IndepYear<span style=color:#f92672>`</span> smallint(<span style=color:#ae81ff>6</span>) <span style=color:#66d9ef>DEFAULT</span> <span style=color:#66d9ef>NULL</span>,
+  <span style=color:#f92672>`</span>Population<span style=color:#f92672>`</span> int(<span style=color:#ae81ff>11</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#ae81ff>0</span>,
+  <span style=color:#f92672>`</span>LifeExpectancy<span style=color:#f92672>`</span> decimal(<span style=color:#ae81ff>3</span>,<span style=color:#ae81ff>1</span>) <span style=color:#66d9ef>DEFAULT</span> <span style=color:#66d9ef>NULL</span>,
+  <span style=color:#f92672>`</span>GNP<span style=color:#f92672>`</span> decimal(<span style=color:#ae81ff>10</span>,<span style=color:#ae81ff>2</span>) <span style=color:#66d9ef>DEFAULT</span> <span style=color:#66d9ef>NULL</span>,
+  <span style=color:#f92672>`</span>GNPOld<span style=color:#f92672>`</span> decimal(<span style=color:#ae81ff>10</span>,<span style=color:#ae81ff>2</span>) <span style=color:#66d9ef>DEFAULT</span> <span style=color:#66d9ef>NULL</span>,
+  <span style=color:#f92672>`</span>LocalName<span style=color:#f92672>`</span> char(<span style=color:#ae81ff>45</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#e6db74>&#39;&#39;</span>,
+  <span style=color:#f92672>`</span>GovernmentForm<span style=color:#f92672>`</span> char(<span style=color:#ae81ff>45</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#e6db74>&#39;&#39;</span>,
+  <span style=color:#f92672>`</span>HeadOfState<span style=color:#f92672>`</span> char(<span style=color:#ae81ff>60</span>) <span style=color:#66d9ef>DEFAULT</span> <span style=color:#66d9ef>NULL</span>,
+  <span style=color:#f92672>`</span>Capital<span style=color:#f92672>`</span> int(<span style=color:#ae81ff>11</span>) <span style=color:#66d9ef>DEFAULT</span> <span style=color:#66d9ef>NULL</span>,
+  <span style=color:#f92672>`</span>Code2<span style=color:#f92672>`</span> char(<span style=color:#ae81ff>2</span>) <span style=color:#66d9ef>NOT</span> <span style=color:#66d9ef>NULL</span> <span style=color:#66d9ef>DEFAULT</span> <span style=color:#e6db74>&#39;&#39;</span>,
+  <span style=color:#66d9ef>PRIMARY</span> <span style=color:#66d9ef>KEY</span> (<span style=color:#f92672>`</span>Code<span style=color:#f92672>`</span>)
+) ENGINE<span style=color:#f92672>=</span>InnoDB <span style=color:#66d9ef>DEFAULT</span> CHARSET<span style=color:#f92672>=</span>utf8mb4;
+</code></pre></div><p>이러면 이 포스트에서 참고하는 kb 쿼리를 따라하는데 문제가 없다!</p>
+<h2 id=semi-join-subquery>semi-join subquery</h2>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql><span style=color:#66d9ef>SELECT</span> ... <span style=color:#66d9ef>FROM</span> outer_tables <span style=color:#66d9ef>WHERE</span> expr <span style=color:#66d9ef>IN</span> (<span style=color:#66d9ef>SELECT</span> ... <span style=color:#66d9ef>FROM</span> inner_tables ...) <span style=color:#66d9ef>AND</span> ...
+</code></pre></div><p>위 쿼리에서 outer_tables의 관심사는 <code>WHERE IN</code> 내의 subquery(<code>SELECT ... FROM inner_tables ...</code>)에 일치하는것 뿐이다. 다른 조건이 없다면 outer_tables 에서 subquery의 결과와 join하여 간단하게 결과를 만들 수 있다.</p>
+<p>준비에서 만든 <code>city</code>와 <code>country</code> 테이블을 사용한 예제를 살펴보면:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql><span style=color:#66d9ef>SELECT</span> <span style=color:#f92672>*</span> <span style=color:#66d9ef>from</span> country 
+<span style=color:#66d9ef>WHERE</span>
+  continent<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Europe&#39;</span> <span style=color:#66d9ef>AND</span>
+  country.code <span style=color:#66d9ef>IN</span> (<span style=color:#66d9ef>SELECT</span> city.countrycode
+                   <span style=color:#66d9ef>FROM</span> city 
+                   <span style=color:#66d9ef>WHERE</span> city.population <span style=color:#f92672>&gt;</span> <span style=color:#ae81ff>1</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>);
+</code></pre></div><p>이런 쿼리가 된다(kb의 쿼리와 달리 <code>city.country</code> 대신 **<code>city.countrycode</code>**를 쓰자). 여기서 subquery는 도시 인구가 1M이 넘는 국가코드들이다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql>MariaDB [world]<span style=color:#f92672>&gt;</span> <span style=color:#66d9ef>EXPLAIN</span> <span style=color:#66d9ef>SELECT</span> <span style=color:#f92672>*</span> <span style=color:#66d9ef>from</span> country 
+    <span style=color:#f92672>-&gt;</span> <span style=color:#66d9ef>WHERE</span>
+    <span style=color:#f92672>-&gt;</span>   continent<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Europe&#39;</span> <span style=color:#66d9ef>AND</span>
+    <span style=color:#f92672>-&gt;</span>   country.code <span style=color:#66d9ef>IN</span> (<span style=color:#66d9ef>SELECT</span> city.countrycode
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>FROM</span> city 
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>WHERE</span> city.population <span style=color:#f92672>&gt;</span> <span style=color:#ae81ff>1</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>);
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+-------------+--------+------------------------+--------------+---------+------+------+------------------------------------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span> id   <span style=color:#f92672>|</span> select_type  <span style=color:#f92672>|</span> <span style=color:#66d9ef>table</span>       <span style=color:#f92672>|</span> <span style=color:#66d9ef>type</span>   <span style=color:#f92672>|</span> possible_keys          <span style=color:#f92672>|</span> <span style=color:#66d9ef>key</span>          <span style=color:#f92672>|</span> key_len <span style=color:#f92672>|</span> <span style=color:#66d9ef>ref</span>  <span style=color:#f92672>|</span> <span style=color:#66d9ef>rows</span> <span style=color:#f92672>|</span> Extra                              <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+-------------+--------+------------------------+--------------+---------+------+------+------------------------------------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span>    <span style=color:#ae81ff>1</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>PRIMARY</span>      <span style=color:#f92672>|</span> country     <span style=color:#f92672>|</span> <span style=color:#66d9ef>ALL</span>    <span style=color:#f92672>|</span> <span style=color:#66d9ef>PRIMARY</span>                <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span>         <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span>    <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span> <span style=color:#f92672>|</span>  <span style=color:#ae81ff>239</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>Using</span> <span style=color:#66d9ef>where</span>                        <span style=color:#f92672>|</span>
+<span style=color:#f92672>|</span>    <span style=color:#ae81ff>1</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>PRIMARY</span>      <span style=color:#f92672>|</span> <span style=color:#f92672>&lt;</span>subquery2<span style=color:#f92672>&gt;</span> <span style=color:#f92672>|</span> eq_ref <span style=color:#f92672>|</span> distinct_key           <span style=color:#f92672>|</span> distinct_key <span style=color:#f92672>|</span> <span style=color:#ae81ff>12</span>      <span style=color:#f92672>|</span> func <span style=color:#f92672>|</span>    <span style=color:#ae81ff>1</span> <span style=color:#f92672>|</span>                                    <span style=color:#f92672>|</span>
+<span style=color:#f92672>|</span>    <span style=color:#ae81ff>2</span> <span style=color:#f92672>|</span> MATERIALIZED <span style=color:#f92672>|</span> city        <span style=color:#f92672>|</span> range  <span style=color:#f92672>|</span> CountryCode,Population <span style=color:#f92672>|</span> Population   <span style=color:#f92672>|</span> <span style=color:#ae81ff>4</span>       <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span> <span style=color:#f92672>|</span>  <span style=color:#ae81ff>237</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>Using</span> <span style=color:#66d9ef>index</span> condition; <span style=color:#66d9ef>Using</span> <span style=color:#66d9ef>where</span> <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+-------------+--------+------------------------+--------------+---------+------+------+------------------------------------+
+</span></code></pre></div><p><code>EXPLAIN</code> 2에 <code>MATERIALIZED</code> 타입이 있다. 이것을 <code>&lt;subquey2></code>라는 이름의 임시 테이블(<code>EXPLAIN</code> 결과의 두번째 레코드)로 넘겨주어 outer query에서 구체화 뷰로서 참조한다. 구체화 뷰는 임시 테이블을 매번 생성하지 않고 바깥 쿼리 실행동안 저장해두고 쓰게 된다(semi-join에서 사용하는 방법이라 뒤에 이어 설명한다).</p>
+<p>즉 첫번째 kb 글의 다음 그림들:</p>
+<p><img src=/images/mariadb-semi-join/1.png alt=1>
+<img src=/images/mariadb-semi-join/2.png alt=2></p>
+<p>에서 회색부분이 구체화 뷰(=서브쿼리의 결과인 임시테이블)이고, kb 두번째 글의 그림을 보면 더 명확하다:</p>
+<p><img src=/images/mariadb-semi-join/3.png alt=3></p>
+<p>(두 글을 왔다갔다 보며 이해하는데 오래 걸렸다&mldr;)</p>
+<p>내가 준비한 데이터 기준으론 3 국가보다 훨씬 많다(76개국). 서브쿼리는 <code>IN</code> 안에서 실행하니 결과 레코드를 <code>DISTINCT</code> 했다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ mysql world -uroot -Nse <span style=color:#e6db74>&#34;SELECT DISTINCT city.countrycode FROM city WHERE city.population &gt; 1*1000*1000&#34;</span> | tr <span style=color:#e6db74>&#39;\n&#39;</span>  <span style=color:#e6db74>&#39;,&#39;</span>
+MEX,ITA,RUS,UKR,GBR,IND,JPN,CAN,MOZ,CHN,IRN,BRA,IDN,GHA,KOR,GIN,TUR,AUS,LBN,BGR,PAK,KAZ,USA,PHL,ARG,CZE,DEU,YUG,COL,GEO,URY,ARM,SYR,SDN,MYS,VEN,HKG,ZMB,CMR,BGD,VNM,ZWE,NGA,TWN,ESP,ECU,AUT,DOM,POL,BLR,LBY,TZA,AFG,AZE,HUN,ROM,AGO,SAU,UZB,FRA,DZA,EGY,CUB,KEN,ZAF,PRK,ETH,CIV,MAR,MMR,SGP,IRQ,CHL,COD,THA,PER
+</code></pre></div><p><code>city</code>(inner table)과 <code>country</code>(outer table)의 순서가 뒤집는게 가능하다는 것도 조금은 이해가 될 것이다. 구체화 뷰는 서브쿼리에서 만들지만, 옵티마이저는 이걸 먼저 만들고 양쪽 테이블에서 참조할 것이기 때문이다(이는 세미 조인 최적화와 관련 있기 때문에 뒤에서 자세히 설명한다).</p>
+<h3 id=조건>조건</h3>
+<p>반대로 구체화 뷰를 양방향에서 (outer -> inner 그리고 inner -> outer) join 가능하지 않는다면 semi-join을 할 수 없다. 예시 쿼리는 서브쿼리인 ***대도시(인구 1M 초과)***와 표면적 0.1M(<code>100*1000</code>, 단위는 아마 제곱 km 같다)이 넘는 조건을 OR로 묶어준다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql><span style=color:#66d9ef>SELECT</span> <span style=color:#f92672>*</span> <span style=color:#66d9ef>from</span> country 
+<span style=color:#66d9ef>WHERE</span>
+  continent<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Europe&#39;</span> <span style=color:#66d9ef>AND</span>
+  (country.code <span style=color:#66d9ef>IN</span> (<span style=color:#66d9ef>SELECT</span> city.countrycode
+                   <span style=color:#66d9ef>FROM</span> city 
+                   <span style=color:#66d9ef>WHERE</span> city.population <span style=color:#f92672>&gt;</span> <span style=color:#ae81ff>1</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>)
+	<span style=color:#66d9ef>OR</span> country.surfacearea <span style=color:#f92672>&gt;</span> <span style=color:#ae81ff>100</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>);
+</code></pre></div><p>이러면 <code>city</code>(inner) -> <code>country</code>(outer) 방향으로 구체화 뷰와 join 할 수 없다. <code>country.surfacearea</code>를 구체화 뷰 바깥의 <em><strong>땅이 넓은 나라</strong></em>도 출력해야하기 때문이다.</p>
+<p><img src=/images/mariadb-semi-join/4.png alt=4></p>
+<p>따라서 구체화 뷰를 만들지만 outer table에서 subquery로 참조하지 않는다(=semi-join하지 않는다):</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql>MariaDB [world]<span style=color:#f92672>&gt;</span> <span style=color:#66d9ef>EXPLAIN</span> <span style=color:#66d9ef>SELECT</span> <span style=color:#f92672>*</span> <span style=color:#66d9ef>from</span> country 
+    <span style=color:#f92672>-&gt;</span> <span style=color:#66d9ef>WHERE</span>
+    <span style=color:#f92672>-&gt;</span>   continent<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Europe&#39;</span> <span style=color:#66d9ef>AND</span>
+    <span style=color:#f92672>-&gt;</span>   (country.code <span style=color:#66d9ef>IN</span> (<span style=color:#66d9ef>SELECT</span> city.countrycode
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>FROM</span> city 
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>WHERE</span> city.population <span style=color:#f92672>&gt;</span> <span style=color:#ae81ff>1</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>)
+    <span style=color:#f92672>-&gt;</span> <span style=color:#66d9ef>OR</span> country.surfacearea <span style=color:#f92672>&gt;</span> <span style=color:#ae81ff>100</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>);
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+---------+-------+------------------------+------------+---------+------+------+-----------------------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span> id   <span style=color:#f92672>|</span> select_type  <span style=color:#f92672>|</span> <span style=color:#66d9ef>table</span>   <span style=color:#f92672>|</span> <span style=color:#66d9ef>type</span>  <span style=color:#f92672>|</span> possible_keys          <span style=color:#f92672>|</span> <span style=color:#66d9ef>key</span>        <span style=color:#f92672>|</span> key_len <span style=color:#f92672>|</span> <span style=color:#66d9ef>ref</span>  <span style=color:#f92672>|</span> <span style=color:#66d9ef>rows</span> <span style=color:#f92672>|</span> Extra                 <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+---------+-------+------------------------+------------+---------+------+------+-----------------------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span>    <span style=color:#ae81ff>1</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>PRIMARY</span>      <span style=color:#f92672>|</span> country <span style=color:#f92672>|</span> <span style=color:#66d9ef>ALL</span>   <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span>                   <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span>       <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span>    <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span> <span style=color:#f92672>|</span>  <span style=color:#ae81ff>239</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>Using</span> <span style=color:#66d9ef>where</span>           <span style=color:#f92672>|</span>
+<span style=color:#f92672>|</span>    <span style=color:#ae81ff>2</span> <span style=color:#f92672>|</span> MATERIALIZED <span style=color:#f92672>|</span> city    <span style=color:#f92672>|</span> range <span style=color:#f92672>|</span> CountryCode,Population <span style=color:#f92672>|</span> Population <span style=color:#f92672>|</span> <span style=color:#ae81ff>4</span>       <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span> <span style=color:#f92672>|</span>  <span style=color:#ae81ff>237</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>Using</span> <span style=color:#66d9ef>index</span> condition <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+---------+-------+------------------------+------------+---------+------+------+-----------------------+
+</span></code></pre></div><h3 id=inner-joins와-차이점>inner joins와 차이점</h3>
+<p>inner join은 조건에 맞는(<code>ON</code>) outer table의 레코드 수만큼 결과를 출력한다. semi-join은 조건에 맞는 레코드 하나만 출력한다.</p>
+<p>인구 1M 이상의 대도시가 있는 유럽 국가는 총 15개국이다(독일이 하나 있는 것은 당연하다):</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql>MariaDB [world]<span style=color:#f92672>&gt;</span> <span style=color:#66d9ef>SELECT</span> <span style=color:#f92672>*</span> <span style=color:#66d9ef>FROM</span> (<span style=color:#66d9ef>SELECT</span> <span style=color:#f92672>*</span> <span style=color:#66d9ef>from</span> country 
+    <span style=color:#f92672>-&gt;</span> <span style=color:#66d9ef>WHERE</span>
+    <span style=color:#f92672>-&gt;</span>   continent<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Europe&#39;</span> <span style=color:#66d9ef>AND</span>
+    <span style=color:#f92672>-&gt;</span>   country.code <span style=color:#66d9ef>IN</span> (<span style=color:#66d9ef>SELECT</span> city.countrycode
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>FROM</span> city 
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>WHERE</span> city.population <span style=color:#f92672>&gt;</span> <span style=color:#ae81ff>1</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>)) <span style=color:#66d9ef>AS</span> country_with_big_city <span style=color:#66d9ef>WHERE</span> name<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Germany&#39;</span>;
+<span style=color:#f92672>+</span><span style=color:#75715e>------+---------+-----------+----------------+-------------+-----------+------------+----------------+------------+------------+-------------+------------------+--------------+---------+-------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span> Code <span style=color:#f92672>|</span> Name    <span style=color:#f92672>|</span> Continent <span style=color:#f92672>|</span> Region         <span style=color:#f92672>|</span> SurfaceArea <span style=color:#f92672>|</span> IndepYear <span style=color:#f92672>|</span> Population <span style=color:#f92672>|</span> LifeExpectancy <span style=color:#f92672>|</span> GNP        <span style=color:#f92672>|</span> GNPOld     <span style=color:#f92672>|</span> LocalName   <span style=color:#f92672>|</span> GovernmentForm   <span style=color:#f92672>|</span> HeadOfState  <span style=color:#f92672>|</span> Capital <span style=color:#f92672>|</span> Code2 <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------+---------+-----------+----------------+-------------+-----------+------------+----------------+------------+------------+-------------+------------------+--------------+---------+-------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span> DEU  <span style=color:#f92672>|</span> Germany <span style=color:#f92672>|</span> Europe    <span style=color:#f92672>|</span> Western Europe <span style=color:#f92672>|</span>   <span style=color:#ae81ff>357022</span>.<span style=color:#ae81ff>00</span> <span style=color:#f92672>|</span>      <span style=color:#ae81ff>1955</span> <span style=color:#f92672>|</span>   <span style=color:#ae81ff>82164700</span> <span style=color:#f92672>|</span>           <span style=color:#ae81ff>77</span>.<span style=color:#ae81ff>4</span> <span style=color:#f92672>|</span> <span style=color:#ae81ff>2133367</span>.<span style=color:#ae81ff>00</span> <span style=color:#f92672>|</span> <span style=color:#ae81ff>2102826</span>.<span style=color:#ae81ff>00</span> <span style=color:#f92672>|</span> Deutschland <span style=color:#f92672>|</span> Federal Republic <span style=color:#f92672>|</span> Johannes Rau <span style=color:#f92672>|</span>    <span style=color:#ae81ff>3068</span> <span style=color:#f92672>|</span> DE    <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------+---------+-----------+----------------+-------------+-----------+------------+----------------+------------+------------+-------------+------------------+--------------+---------+-------+
+</span><span style=color:#75715e></span><span style=color:#ae81ff>1</span> <span style=color:#66d9ef>row</span> <span style=color:#66d9ef>in</span> <span style=color:#66d9ef>set</span> (<span style=color:#ae81ff>0</span>.<span style=color:#ae81ff>003</span> sec)
+</code></pre></div><p>하지만 inner join 한 결과는 각국의 도시의 수만큼 중복되어 많아진다. <code>DISTINCT</code>해야 semi-join한 결과와 같다(kb의 데이터와 달리 독일의 대도시는 93이나 된다. 아마 예전? 데이터 기준인듯..):</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql>MariaDB [world]<span style=color:#f92672>&gt;</span> <span style=color:#66d9ef>SELECT</span> <span style=color:#66d9ef>COUNT</span>(<span style=color:#f92672>*</span>) <span style=color:#66d9ef>FROM</span> country <span style=color:#66d9ef>INNER</span> <span style=color:#66d9ef>JOIN</span> city <span style=color:#66d9ef>ON</span> country.code <span style=color:#f92672>=</span> city.countrycode
+    <span style=color:#f92672>-&gt;</span> <span style=color:#66d9ef>WHERE</span> 
+    <span style=color:#f92672>-&gt;</span>   continent<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Europe&#39;</span> <span style=color:#66d9ef>AND</span>
+    <span style=color:#f92672>-&gt;</span>   country.code <span style=color:#66d9ef>IN</span> (<span style=color:#66d9ef>SELECT</span> city.countrycode
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>FROM</span> city 
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>WHERE</span> city.population<span style=color:#f92672>&gt;</span><span style=color:#ae81ff>1</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>);
+<span style=color:#f92672>+</span><span style=color:#75715e>----------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span> <span style=color:#66d9ef>COUNT</span>(<span style=color:#f92672>*</span>) <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>----------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span>      <span style=color:#ae81ff>709</span> <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>----------+
+</span><span style=color:#75715e></span><span style=color:#ae81ff>1</span> <span style=color:#66d9ef>row</span> <span style=color:#66d9ef>in</span> <span style=color:#66d9ef>set</span> (<span style=color:#ae81ff>0</span>.<span style=color:#ae81ff>001</span> sec)
+
+MariaDB [world]<span style=color:#f92672>&gt;</span> <span style=color:#66d9ef>SELECT</span> <span style=color:#66d9ef>COUNT</span>(<span style=color:#f92672>*</span>) <span style=color:#66d9ef>FROM</span> (<span style=color:#66d9ef>SELECT</span> country.name <span style=color:#66d9ef>FROM</span> country <span style=color:#66d9ef>INNER</span> <span style=color:#66d9ef>JOIN</span> city <span style=color:#66d9ef>ON</span> country.code <span style=color:#f92672>=</span> city.countrycode
+    <span style=color:#f92672>-&gt;</span> <span style=color:#66d9ef>WHERE</span> 
+    <span style=color:#f92672>-&gt;</span>   continent<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Europe&#39;</span> <span style=color:#66d9ef>AND</span>
+    <span style=color:#f92672>-&gt;</span>   country.code <span style=color:#66d9ef>IN</span> (<span style=color:#66d9ef>SELECT</span> city.countrycode
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>FROM</span> city 
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>WHERE</span> city.population<span style=color:#f92672>&gt;</span><span style=color:#ae81ff>1</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>)) <span style=color:#66d9ef>AS</span> country_with_big_city <span style=color:#66d9ef>WHERE</span> name<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Germany&#39;</span>;
+<span style=color:#f92672>+</span><span style=color:#75715e>----------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span> <span style=color:#66d9ef>COUNT</span>(<span style=color:#f92672>*</span>) <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>----------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span>       <span style=color:#ae81ff>93</span> <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>----------+
+</span><span style=color:#75715e></span><span style=color:#ae81ff>1</span> <span style=color:#66d9ef>row</span> <span style=color:#66d9ef>in</span> <span style=color:#66d9ef>set</span> (<span style=color:#ae81ff>0</span>.<span style=color:#ae81ff>005</span> sec)
+
+MariaDB [world]<span style=color:#f92672>&gt;</span> <span style=color:#66d9ef>SELECT</span> <span style=color:#66d9ef>COUNT</span>(<span style=color:#66d9ef>DISTINCT</span> (country.name)) <span style=color:#66d9ef>FROM</span> country <span style=color:#66d9ef>INNER</span> <span style=color:#66d9ef>JOIN</span> city <span style=color:#66d9ef>ON</span> country.code <span style=color:#f92672>=</span> city.countrycode
+    <span style=color:#f92672>-&gt;</span> <span style=color:#66d9ef>WHERE</span> 
+    <span style=color:#f92672>-&gt;</span>   continent<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Europe&#39;</span> <span style=color:#66d9ef>AND</span>
+    <span style=color:#f92672>-&gt;</span>   country.code <span style=color:#66d9ef>IN</span> (<span style=color:#66d9ef>SELECT</span> city.countrycode
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>FROM</span> city 
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>WHERE</span> city.population<span style=color:#f92672>&gt;</span><span style=color:#ae81ff>1</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>);
+<span style=color:#f92672>+</span><span style=color:#75715e>--------------------------------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span> <span style=color:#66d9ef>COUNT</span>(<span style=color:#66d9ef>DISTINCT</span> (country.name)) <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>--------------------------------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span>                             <span style=color:#ae81ff>15</span> <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>--------------------------------+
+</span><span style=color:#75715e></span><span style=color:#ae81ff>1</span> <span style=color:#66d9ef>row</span> <span style=color:#66d9ef>in</span> <span style=color:#66d9ef>set</span> (<span style=color:#ae81ff>0</span>.<span style=color:#ae81ff>010</span> sec)
+</code></pre></div><h2 id=구체화-전략>구체화 전략</h2>
+<p>구체화 전략엔 lookup과 scan 두 가지가 있다. 각 전략은 구체화를 outer, inner 테이블 중 어디서 시작해 어느 방향으로 할 것인가와 관련 있다.</p>
+<h3 id=lookup>Lookup</h3>
+<p>구체화 뷰를 lookup 테이블로 활용하는 전략이다. 위 대도시 국가 쿼리의 경우가 그렇다. <code>EXPLAIN</code>를 다시 보자:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql>MariaDB [world]<span style=color:#f92672>&gt;</span> <span style=color:#66d9ef>EXPLAIN</span> <span style=color:#66d9ef>SELECT</span> <span style=color:#f92672>*</span> <span style=color:#66d9ef>from</span> country 
+    <span style=color:#f92672>-&gt;</span> <span style=color:#66d9ef>WHERE</span>
+    <span style=color:#f92672>-&gt;</span>   continent<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Europe&#39;</span> <span style=color:#66d9ef>AND</span>
+    <span style=color:#f92672>-&gt;</span>   country.code <span style=color:#66d9ef>IN</span> (<span style=color:#66d9ef>SELECT</span> city.countrycode
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>FROM</span> city 
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>WHERE</span> city.population <span style=color:#f92672>&gt;</span> <span style=color:#ae81ff>1</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>);
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+-------------+--------+------------------------+--------------+---------+------+------+------------------------------------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span> id   <span style=color:#f92672>|</span> select_type  <span style=color:#f92672>|</span> <span style=color:#66d9ef>table</span>       <span style=color:#f92672>|</span> <span style=color:#66d9ef>type</span>   <span style=color:#f92672>|</span> possible_keys          <span style=color:#f92672>|</span> <span style=color:#66d9ef>key</span>          <span style=color:#f92672>|</span> key_len <span style=color:#f92672>|</span> <span style=color:#66d9ef>ref</span>  <span style=color:#f92672>|</span> <span style=color:#66d9ef>rows</span> <span style=color:#f92672>|</span> Extra                              <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+-------------+--------+------------------------+--------------+---------+------+------+------------------------------------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span>    <span style=color:#ae81ff>1</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>PRIMARY</span>      <span style=color:#f92672>|</span> country     <span style=color:#f92672>|</span> <span style=color:#66d9ef>ALL</span>    <span style=color:#f92672>|</span> <span style=color:#66d9ef>PRIMARY</span>                <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span>         <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span>    <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span> <span style=color:#f92672>|</span>  <span style=color:#ae81ff>239</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>Using</span> <span style=color:#66d9ef>where</span>                        <span style=color:#f92672>|</span>
+<span style=color:#f92672>|</span>    <span style=color:#ae81ff>1</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>PRIMARY</span>      <span style=color:#f92672>|</span> <span style=color:#f92672>&lt;</span>subquery2<span style=color:#f92672>&gt;</span> <span style=color:#f92672>|</span> eq_ref <span style=color:#f92672>|</span> distinct_key           <span style=color:#f92672>|</span> distinct_key <span style=color:#f92672>|</span> <span style=color:#ae81ff>12</span>      <span style=color:#f92672>|</span> func <span style=color:#f92672>|</span>    <span style=color:#ae81ff>1</span> <span style=color:#f92672>|</span>                                    <span style=color:#f92672>|</span>
+<span style=color:#f92672>|</span>    <span style=color:#ae81ff>2</span> <span style=color:#f92672>|</span> MATERIALIZED <span style=color:#f92672>|</span> city        <span style=color:#f92672>|</span> range  <span style=color:#f92672>|</span> CountryCode,Population <span style=color:#f92672>|</span> Population   <span style=color:#f92672>|</span> <span style=color:#ae81ff>4</span>       <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span> <span style=color:#f92672>|</span>  <span style=color:#ae81ff>237</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>Using</span> <span style=color:#66d9ef>index</span> condition; <span style=color:#66d9ef>Using</span> <span style=color:#66d9ef>where</span> <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+-------------+--------+------------------------+--------------+---------+------+------+------------------------------------+
+</span></code></pre></div><ul>
+<li>id=2에 해당하는 <code>MATERIALIZED</code>는 모든 컬럼에 unique key constraint가 있는 임시 테이블이다.</li>
+<li>outer table 인 Country에서 semi-join할 수 있게 이를(table <code>&lt;subquery2></code>) 올린다.</li>
+<li><code>country</code> 테이블에서 구체화 뷰를 사용해 index loopkup하여(<code>eq_ref</code>) semi-join한다</li>
+</ul>
+<h2 id=scan>Scan</h2>
+<p>대도시의 기준을 더 깐깐히 해보자. 옵티마이저는 작아진 구체화 뷰를 full scan하는 전략을 쓴다(반대로 lookup을 outer table에서 하게 된다).</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql>MariaDB [world]<span style=color:#f92672>&gt;</span> <span style=color:#66d9ef>EXPLAIN</span> <span style=color:#66d9ef>SELECT</span> <span style=color:#f92672>*</span> <span style=color:#66d9ef>from</span> country 
+    <span style=color:#f92672>-&gt;</span> <span style=color:#66d9ef>WHERE</span>
+    <span style=color:#f92672>-&gt;</span>   continent<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;Europe&#39;</span> <span style=color:#66d9ef>AND</span>
+    <span style=color:#f92672>-&gt;</span>   country.code <span style=color:#66d9ef>IN</span> (<span style=color:#66d9ef>SELECT</span> city.countrycode
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>FROM</span> city 
+    <span style=color:#f92672>-&gt;</span>                    <span style=color:#66d9ef>WHERE</span> city.population <span style=color:#f92672>&gt;</span> <span style=color:#ae81ff>7</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span><span style=color:#f92672>*</span><span style=color:#ae81ff>1000</span>);
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+-------------+--------+------------------------+------------+---------+------------------------+------+-----------------------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span> id   <span style=color:#f92672>|</span> select_type  <span style=color:#f92672>|</span> <span style=color:#66d9ef>table</span>       <span style=color:#f92672>|</span> <span style=color:#66d9ef>type</span>   <span style=color:#f92672>|</span> possible_keys          <span style=color:#f92672>|</span> <span style=color:#66d9ef>key</span>        <span style=color:#f92672>|</span> key_len <span style=color:#f92672>|</span> <span style=color:#66d9ef>ref</span>                    <span style=color:#f92672>|</span> <span style=color:#66d9ef>rows</span> <span style=color:#f92672>|</span> Extra                 <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+-------------+--------+------------------------+------------+---------+------------------------+------+-----------------------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span>    <span style=color:#ae81ff>1</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>PRIMARY</span>      <span style=color:#f92672>|</span> <span style=color:#f92672>&lt;</span>subquery2<span style=color:#f92672>&gt;</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>ALL</span>    <span style=color:#f92672>|</span> distinct_key           <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span>       <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span>    <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span>                   <span style=color:#f92672>|</span>   <span style=color:#ae81ff>14</span> <span style=color:#f92672>|</span>                       <span style=color:#f92672>|</span>
+<span style=color:#f92672>|</span>    <span style=color:#ae81ff>1</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>PRIMARY</span>      <span style=color:#f92672>|</span> country     <span style=color:#f92672>|</span> eq_ref <span style=color:#f92672>|</span> <span style=color:#66d9ef>PRIMARY</span>                <span style=color:#f92672>|</span> <span style=color:#66d9ef>PRIMARY</span>    <span style=color:#f92672>|</span> <span style=color:#ae81ff>12</span>      <span style=color:#f92672>|</span> world.city.CountryCode <span style=color:#f92672>|</span>    <span style=color:#ae81ff>1</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>Using</span> <span style=color:#66d9ef>where</span>           <span style=color:#f92672>|</span>
+<span style=color:#f92672>|</span>    <span style=color:#ae81ff>2</span> <span style=color:#f92672>|</span> MATERIALIZED <span style=color:#f92672>|</span> city        <span style=color:#f92672>|</span> range  <span style=color:#f92672>|</span> CountryCode,Population <span style=color:#f92672>|</span> Population <span style=color:#f92672>|</span> <span style=color:#ae81ff>4</span>       <span style=color:#f92672>|</span> <span style=color:#66d9ef>NULL</span>                   <span style=color:#f92672>|</span>   <span style=color:#ae81ff>14</span> <span style=color:#f92672>|</span> <span style=color:#66d9ef>Using</span> <span style=color:#66d9ef>index</span> condition <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------+--------------+-------------+--------+------------------------+------------+---------+------------------------+------+-----------------------+
+</span><span style=color:#75715e></span><span style=color:#ae81ff>3</span> <span style=color:#66d9ef>rows</span> <span style=color:#66d9ef>in</span> <span style=color:#66d9ef>set</span> (<span style=color:#ae81ff>0</span>.<span style=color:#ae81ff>000</span> sec)
+</code></pre></div><p>구체화 뷰(<code>MATERIALIZED</code>)는 똑같이 <code>city</code>(inner table)에서 만든다. 구체화 전략을 간단하게 판단하는 법은 <code>EXPLAIN</code> 결과 table이 <code>&lt;subquery2></code>인 레코드의 type이 <code>ALL</code>일 경우 scan, <code>eq_ref</code>이면 lookup으로 판단할 수 있다.</p>
+<h2 id=시스템-변수>시스템 변수</h2>
+<p><a href=https://mariadb.com/kb/en/server-system-variables/#optimizer_switch><code>optimizer_switch</code></a> 변수에 <code>materialization=on</code>과 <code>semijoin=on</code>으로 설정되어야 semi-join 구체화 전략을 사용할 수 있다.</p>
+<p>옵션이 나눠져 있듯, 구체화와 semi-join은 독립적으로 적용될 수 있다(<code>EXPLAIN</code> 레코드가 나뉘어진걸 보고 유추할 수 있다). <a href=https://mariadb.com/kb/en/non-semi-join-subquery-optimizations/#materialization-for-non-correlated-in-subqueries>semi-join을 하지 않는 구체화도 있다</a>고 한다.</p>
+<h2 id=정리>정리</h2>
+<ul>
+<li>semi-join은 subquery(from inner table)와 outer table을 join처럼 가볍게 연산하는 동작</li>
+<li>이때 subquery를 구체화 뷰로 저장하여 씀</li>
+<li>구체화 전략을 임시 테이블을 full scan할지 lookup 테이블로 쓸지 두가지가 있음
+<ul>
+<li><code>EXPLAIN</code>의 <code>&lt;subquery2></code> 테이블 레코드의 type으로 구분하면 쉽다</li>
+<li>scan: <code>ALL</code></li>
+<li>lookup: <code>eq_ref</code></li>
+</ul>
+</li>
+</ul>
+<p>정리하는게 너무 어려웠다. 특히 구체화 전략 부분은 쿼리 결과에서 눈으로 보이는게 아니라 어려웠다. <code>EXPLAIN</code>을 잘 볼 줄 알아야 하는데, 자주 쓰지 않다보니 만날 때마다 짜릿하다&mldr; 그래도 type에 대한 해석은 조금 늘은거 같다.</p>
+<p>구체화 뷰는, DDIA 읽었을 땐 OLAP를 위한 특수한 형태의 DB 테이블 또는 콜렉션이라고만 생각했는데, 이미 알고 있는 RDB 내부에서도 쓰인다는 사실이 새로웠다.</p>
+<p>원랜 <a href=https://mariadb.com/docs/reference/mdb/system-variables/in_predicate_conversion_threshold/>in_predicate_conversion_threshold</a>란 시스템 변수에 대해 정리하고, 이를 튜닝한 경험을 소개하고 싶었다. 정확히 이해하고 튜닝한게 아니라 튜닝해서 테스트하니 성능이 좋아서 프로덕션에 도입한거라 찜찜한 상태이다. 이 변수 역할을 이해하기 위해서 semi-join 이해가 먼저 필요할거 같아 정리했는데 너무 오래걸렸다. 회사 개발자들과도 공유하고 semi-join, 구체화 뷰와 전략 그리고 변수 튜닝에 대해 이야기 해봐야겠다.</p>
+<p>DBA 되는줄 알았는데 어림도 없지. DBA 스택오버플로 가입하고 글쓴게 소득인가 싶다 ㅎㅎ;</p>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://engineering.linecorp.com/ko/blog/mysql-workbench-visual-explain-index/>https://engineering.linecorp.com/ko/blog/mysql-workbench-visual-explain-index/</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
