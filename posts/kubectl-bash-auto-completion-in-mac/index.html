@@ -1,0 +1,97 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>맥에서 kubectl bash 자동 완성 기능 켜기 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>맥에서 kubectl bash 자동 완성 기능 켜기</h2>
+<small class=date>Thu Feb 17, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/macos class=tag>macos</a>
+<a href=https://flavono123.github.io/tags/bash class=tag>bash</a>
+<a href=https://flavono123.github.io/tags/kubectl class=tag>kubectl</a>
+</div>
+</div>
+<div class=content><p><a href=https://kubernetes.io/docs/reference/kubectl/cheatsheet/#bash>쿠버네티스 문서 bash 자동완성</a> 안내처럼 <code>$HOME/.bash_profile</code>에 코드를 추가했는데, 자동완성이 되질 않는다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ tail -3 ~/.bash_profile
+source &lt;<span style=color:#f92672>(</span>kubectl completion bash<span style=color:#f92672>)</span>
+alias k<span style=color:#f92672>=</span>kubectl
+complete -F __start_kubectl k
+❯ k ap-bash: completion: <span style=color:#66d9ef>function</span> <span style=color:#e6db74>`</span>__start_kubectl<span style=color:#960050;background-color:#1e0010>&#39;</span> not found <span style=color:#75715e># k apply 치고 싶어!</span>
+</code></pre></div><p>구글링 결과 <a href=https://kubernetes.io/ko/docs/tasks/tools/included/optional-kubectl-configs-bash-mac/>다른 문서</a>를 찾게 됐다. 안되는 이유는 맥 시스템의 기본 bash 버전에선 자동완성이 지원되지 않기 때문이다.</p>
+<p>아마 위와 같은 문제를 겪고 있다면 bash 버전은 4.1 미만, 맥 시스템 bash(/bin/bash)를 쓰고 있을 감능성이 높다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ echo $BASH_VERSION $SHELL
+3.2.57<span style=color:#f92672>(</span>1<span style=color:#f92672>)</span>-release /bin/bash
+</code></pre></div><p>먼저 최신 bash를 brew를 써서 받는다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ brew install bash
+</code></pre></div><p>다운 받은 최신 bash를 기본 셸로 사용하기 위해 /etc/shells에 추가해준다:</p>
+<ul>
+<li>시스템 bash(/bin/bash)와 brew로 받은 bash(/usr/local/bin/bash) 실행 파일은 다르다.</li>
+<li>brew 받은 파일은 저런데에 있다(<code>brew --prefix bash # /usr/local/opt/bash </code>)</li>
+</ul>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat /etc/shells 
+<span style=color:#75715e># List of acceptable shells for chpass(1).</span>
+<span style=color:#75715e># Ftpd will not allow users to connect who are not using</span>
+<span style=color:#75715e># one of these shells.</span>
+
+/bin/bash
+/bin/csh
+/bin/dash
+/bin/ksh
+/bin/sh
+/bin/tcsh
+/bin/zsh
+/usr/local/bin/bash
+</code></pre></div><p>chsh로 기본 셸을 바꾸고 새 bash 접속한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ chsh -s /usr/local/bin/bash
+Changing shell <span style=color:#66d9ef>for</span> hansuk.
+Password <span style=color:#66d9ef>for</span> hansuk: 
+
+❯ echo $BASH_VERSION $SHELL
+5.1.16<span style=color:#f92672>(</span>1<span style=color:#f92672>)</span>-release /bin/bash
+</code></pre></div><p>bash-completion v2를 설치하고 caveats을 실행한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ brew install bash-completion@2
+...
+<span style=color:#f92672>==</span>&gt; Caveats
+Add the following line to your ~/.bash_profile:
+  <span style=color:#f92672>[[</span> -r <span style=color:#e6db74>&#34;/usr/local/etc/profile.d/bash_completion.sh&#34;</span> <span style=color:#f92672>]]</span> <span style=color:#f92672>&amp;&amp;</span> . <span style=color:#e6db74>&#34;/usr/local/etc/profile.d/bash_completion.sh&#34;</span>
+...
+</code></pre></div><p>caveat과 함께 kubectl bash 자동완성 cheatsheet 코드도 $HOME/.bash_profile에 써주면 셸 로그인 시 자동완성이 된다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># $HOME/.bash_profile</span>
+<span style=color:#75715e># Bash completion v2</span>
+<span style=color:#f92672>[[</span> -r <span style=color:#e6db74>&#34;/usr/local/etc/profile.d/bash_completion.sh&#34;</span> <span style=color:#f92672>]]</span> <span style=color:#f92672>&amp;&amp;</span> . <span style=color:#e6db74>&#34;/usr/local/etc/profile.d/bash_completion.sh&#34;</span>
+
+<span style=color:#75715e># k8s alias and auto complete</span>
+source &lt;<span style=color:#f92672>(</span>kubectl completion bash<span style=color:#f92672>)</span>
+alias k<span style=color:#f92672>=</span>kubectl
+complete -F __start_kubectl k
+</code></pre></div><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ k ap <span style=color:#75715e># &lt;tab&gt; &lt;tab&gt;</span>
+api-resources  api-versions   apply 
+</code></pre></div><p>👍</p>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://apple.stackexchange.com/questions/224511/how-to-use-bash-as-default-shell>https://apple.stackexchange.com/questions/224511/how-to-use-bash-as-default-shell</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
