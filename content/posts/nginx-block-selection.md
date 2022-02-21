@@ -7,7 +7,7 @@ tags:
 
 지난 포스트 [웹 서버/리버스 프록시로서 nginx 설정 구조(HTTP)](/posts/nginx-conf-structure)와 [nginx 설정 정적 분석](/posts/static-analysis-nginx-conf)에서 이어지는 내용이다.
 
-nginx 설정은 server와 location 디렉티브를 정의하여 요청이 어떻게 처리할지 정하게 된다. 이 글은 [Understanding Nginx Server and Location Block Selection Algorithms](https://www.digitalocean.com/community/tutorials/understanding-nginx-server-and-location-block-selection-algorithms)를 읽고 이해한 일부 내용을 정리한다(다 이해하진 못했는데 이 부분은 나중에 설정을 바꿔가며 직접 테스트 해보는걸로 일단 또 미뤄둔다..). 
+nginx 설정은 server와 location 디렉티브를 정의하여 요청이 어떻게 처리할지 정하게 된다. 이 글은 [Understanding Nginx Server and Location Block Selection Algorithms](https://www.digitalocean.com/community/tutorials/understanding-nginx-server-and-location-block-selection-algorithms)를 읽고 이해한 일부 내용을 정리한다(다 이해하진 못했는데 이 부분은 나중에 설정을 바꿔가며 직접 테스트 해보는걸로 미뤄둔다..). 
 
 ## server 블록 선택 알고리즘
 
@@ -79,11 +79,11 @@ server {
 ```
 
 `curl -H "Host: <host.to.test>" <expose.service.ip>`처럼 요청해서 어떤 server 블록에서 요청이 처리되는지 테스트 해 볼 수 있다. 다음 호스트에 대해 요청해서 답을 확인하거나(응답이 server_name 인자가 되도록 했다), 설정을 보고 유추하는 식으로 연습해보자. 또는 특정 server 블록에서 처리되도록 호스트를 만드는것도 재밌을 것이다:
-- www.example.com
-- host1.example.com
-- www.ex**maple**.com(오타에 유의, 왜 결과가 그런지 생각해보자)
-- www.example.org
-- subdomain.example.org
+- `www.example.com`
+- `host1.example.com`
+- `www.ex**maple**.com`(오타에 유의, 왜 결과가 그런지 생각해보자)
+- `www.example.org`
+- `subdomain.example.org`
 
 ## location
 server 블록 내에는 같은 IP, 포트, 도메인의 요청이 처리된다. URI별로 요청을 달리 처리할 때 [location](http://nginx.org/en/docs/http/ngx_http_core_module.html#location) 디렉티브를 쓴다. 따라서 location 디렉티브는 URI 즉, 경로와 optional modifier로 이루어져 있다(`@`으로 시작하는 프록시 이름은 선택 알고리즘과 관련이 없어 생략한다).
