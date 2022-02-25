@@ -1,0 +1,102 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>nginx location 점프 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>nginx location 점프</h2>
+<small class=date>Fri Feb 25, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/nginx class=tag>nginx</a>
+</div>
+</div>
+<div class=content><p>지난 포스트, <a href=/posts/nginx-block-selection>nginx 블록 선택 알고리즘</a>, 에서 테스트와 설명에 자신감이 없던 부분에 대한 보충 설명이다. <a href=https://www.digitalocean.com/community/tutorials/understanding-nginx-server-and-location-block-selection-algorithms>Understanding Nginx Server and Location Block Selection Algorithms</a>를 참고하여 location 컨텍스트 내에서 다시 location 탐색을 유발하는 디렉티브 네개를 소개했다:</p>
+<ul>
+<li>index</li>
+<li>try_files</li>
+<li>rewrite</li>
+<li>error_page</li>
+</ul>
+<p>이 중 세개는 테스트해봤다. 첫번째인 index 디렉티브는 검증하지 못했다. 디지털 오션 참고 글엔 location 컨텍스트가 비어 있어, index 디렉티브를 상속 받는게 아니라 각각 써주었다:</p>
+<pre tabindex=0><code>...
+  location = /exact {
+    index index.html;
+  }
+
+  location / {
+    index index.html;
+  }
+...
+</code></pre><p>하지만 의도한대로 동작하지 않았다. /exact/ 로 요청하면, /exact/index.html 이 서빙됐다. <a href=http://nginx.org/en/docs/http/ngx_http_index_module.html#index>nginx 문서</a>의 설명도 점프에 대해 이야기 하지만, 예제는 더 모호한 것이라 시도하진 않았다.</p>
+<p>try_files는 성공했다. <a href=http://nginx.org/en/docs/http/ngx_http_core_module.html#try_files>문서 설명</a>처럼 찾는 파일이 없으면 마지막 인자 uri로 internal redirect를 한다. Digital ocean 글에서 언급이 됐던, internal redirect는 점프를 의미한다. 이게 좀 더 공식적인 용어 같다.</p>
+<p>rewrite는 마지막 flag 인자가 last일 경우, internal redirect가 발생할 수 있다:</p>
+<blockquote>
+<p>stops processing the current set of ngx_http_rewrite_module directives and starts a search for a new location matching the changed URI;</p>
+</blockquote>
+<ul>
+<li><a href=http://nginx.org/en/docs/http/ngx_http_rewrite_module.html#rewrite>rewrite 문서</a></li>
+</ul>
+<p>error_page 역시 마지막 인자 uri에 의해서 internal redirect가 발생할 수 있다:</p>
+<blockquote>
+<p>This causes an internal redirect to the specified uri with the client request method changed to “GET” (for all methods other than “GET” and “HEAD”).</p>
+</blockquote>
+<ul>
+<li><a href=http://nginx.org/en/docs/http/ngx_http_core_module.html#error_page>error_page 문서</a></li>
+</ul>
+<p>Digital ocean의 예제를 참고해 테스트해볼 수 있도록 lab을 구성했다(<a href=https://github.com/flavono123/nginx-the-hard-way>repo</a>). README에 try_files, rewrite, error_page 각각 커밋이 있는데, 여기로 checkout 하면 된다(같은 nginx 설정 파일에 커밋을 쌓아서 이렇게 했다. lab 재현 환경 문서화가 아주 깔끔한건 아니지만&mldr; 혼자서 이정도면 충분한듯)</p>
+<p>여기서 몇가지 느낀점이 있다:</p>
+<ul>
+<li>try_files 인자 처리가 불합리(?)하다.
+<ul>
+<li>마지막 인자를 포함해서 모두 root 인자 + location 인자 하위에서 파일을 찾는다.</li>
+<li>그런데 마지막 인자는 <code>/</code>로 시작해서 절대 경로로 보인다.</li>
+<li>e.g. <code>try_files $uri $uri.html $uri/ /fallback/index.html;</code></li>
+<li>마지막 인자 <code>/fallback/index.html</code>만 <code>/</code>로 시작하지만, 앞선 탐색과 마찬가지로, 현재 컨텍스트 디렉토리 내에서 찾는다.</li>
+</ul>
+</li>
+<li>그런데 <a href=http://nginx.org/en/docs/http/ngx_http_core_module.html#try_files>try_files</a>와 <a href=http://nginx.org/en/docs/http/ngx_http_core_module.html#error_page>error_page 문서</a>를 보면, 이 부분은 <code>uri</code>라는 인자로 구분되어 있다.
+<ul>
+<li>error_page는 비교할 인자가 없지만, try_files는 앞 인자인 <code>file</code>과 비교가 된다.</li>
+<li>그리고 없으면 다음으로 넘어간다는 점과, location 탐색(internal redirect)를 한다는 점도 구분된다.</li>
+</ul>
+</li>
+<li>문서의 <code>uri</code>라는 인자는 그런 특성을 갖는걸까?</li>
+</ul>
+<p>이번에도 모든게 명확히 보이진 않는다. 다시 C를 공부해서 nginx 코드를 보는게 빠를까 하는 생각이 또 든다(그러나 아니란걸 알고 있다). 계속 파고 들다 보면 끝이 없으므로 일단 factsheet를 하나 정리한다:</p>
+<ul>
+<li>try_files의 마지막 인자(uri)로 fallback하면 internal redirect 할 가능성이 있다.</li>
+<li>rewrite를 <code>last</code> flag와 쓰면 패턴에 따라 internal redirect 할 가능성이 있다.</li>
+<li>error_page 조건에 맞아 uri로 fallback하면 internal redirect 할 가능성이 있다.</li>
+</ul>
+<p>이번에도 파싱해서 정적으로 추적해보자:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># try_files 때문에 internal redirect 위험이 있는 location</span>
+❯ crossplane parse nginx.conf  | jq -r <span style=color:#e6db74>&#39;.config[&lt;n&gt;].parsed[] | .. | select(.directive?==&#34;location&#34;) | select(.block[].directive==&#34;try_files&#34;)&#39;</span>
+<span style=color:#75715e># rewrite ... last 때문에 internal redirect 위험이 있는 location</span>
+❯ crossplane parse nginx.conf  | jq -r <span style=color:#e6db74>&#39;.config[&lt;n&gt;].parsed[] | .. | select(.directive?==&#34;loccation&#34;) | select(.block[].directive == &#34;rewrite&#34; and .block[].args[-1] == &#34;last&#34;)&#39;</span>
+<span style=color:#75715e># error_page 때문에 internal redirect 위험이 있는 location</span>
+❯ crossplane parse nginx.conf  | jq -r <span style=color:#e6db74>&#39;.config[1].parsed[] | .. | select(.directive?==&#34;location&#34;) | select(.block[].directive==&#34;error_page&#34;)&#39;</span>
+</code></pre></div><hr>
+<p>nginx 왜 이리 요청을 복잡하게 처리하나 싶지만&mldr; 재밌기도 하다. 또 k8s의 공식 ingress controller라서 배워두는게 아깝진 않을거 같다(그쪽에선 요청과 서비스 매치 처리가 훨씬 간단해보였다). 아직 알게 많아서 재밌기도하다. 디렉티브 상속과 모듈에 관한 내용도 나중에 정리해봐야겠다.</p>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
