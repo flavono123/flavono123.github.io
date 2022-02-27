@@ -80,6 +80,15 @@ main {
   transform: scale(1.2);
 }
 
+/* pagination */
+ul.pagination {
+  list-style-type: none;
+}
+
+li.page-item {
+  display: inline;
+}
+
 /* article section */
 
 .articles {
