@@ -131,6 +131,9 @@ output "password" {
 
 결국은 회사에서 keybase도 사용 안하고 aws_iam_user_login_profile 리소스도 terraform으로 관리 안하기로 했다. 다른 서드파티 앱을 쓰는 비용 대비 IAM 작업할 빈도가 적어 1password로 비밀번호 생성해 수작업 하기로 했다. 그냥 나의 PGP 만드는 계기가 되었다 ㅎㅎ.
 
+- git commit 시 사용하려면 `user.email`, `user.name`의 값이 PGP 키의 것과 같아야 한다.
+- PGP Trust를 바꾸려면 [이 링크](https://www.phildev.net/pgp/gpgtrust.html)를 참고하자.
+
 ## 정리
 - `aws_iam_user_login_profile` 생성 시 `pgp_key` 옵션을 써주어야 한다.
 - `keybase`를 사용하면 로그인으로 편하게 할 수 있다.
@@ -143,3 +146,5 @@ output "password" {
 - https://johngrib.github.io/wiki/gpg/
 - https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_user_login_profile
 - https://stackoverflow.com/questions/53513795/pgp-key-in-terraform-for-aws-iam-user-login-profile
+- https://www.44bits.io/ko/post/add-signing-key-to-git-commit-by-gpg
+- https://www.phildev.net/pgp/gpgtrust.html
