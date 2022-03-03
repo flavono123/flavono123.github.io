@@ -116,6 +116,10 @@ ssb   rsa4096 2022-03-01 <span style=color:#f92672>[</span>E<span style=color:#f
 ❯ export GPG_TTY<span style=color:#f92672>=</span><span style=color:#66d9ef>$(</span>tty<span style=color:#66d9ef>)</span>
 ❯ terraform output -raw password | base64 --decode | gpg -d
 </code></pre></div><p>결국은 회사에서 keybase도 사용 안하고 aws_iam_user_login_profile 리소스도 terraform으로 관리 안하기로 했다. 다른 서드파티 앱을 쓰는 비용 대비 IAM 작업할 빈도가 적어 1password로 비밀번호 생성해 수작업 하기로 했다. 그냥 나의 PGP 만드는 계기가 되었다 ㅎㅎ.</p>
+<ul>
+<li>git commit 시 사용하려면 <code>user.email</code>, <code>user.name</code>의 값이 PGP 키의 것과 같아야 한다.</li>
+<li>PGP Trust를 바꾸려면 <a href=https://www.phildev.net/pgp/gpgtrust.html>이 링크</a>를 참고하자.</li>
+</ul>
 <h2 id=정리>정리</h2>
 <ul>
 <li><code>aws_iam_user_login_profile</code> 생성 시 <code>pgp_key</code> 옵션을 써주어야 한다.</li>
@@ -132,6 +136,8 @@ ssb   rsa4096 2022-03-01 <span style=color:#f92672>[</span>E<span style=color:#f
 <li><a href=https://johngrib.github.io/wiki/gpg/>https://johngrib.github.io/wiki/gpg/</a></li>
 <li><a href=https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_user_login_profile>https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_user_login_profile</a></li>
 <li><a href=https://stackoverflow.com/questions/53513795/pgp-key-in-terraform-for-aws-iam-user-login-profile>https://stackoverflow.com/questions/53513795/pgp-key-in-terraform-for-aws-iam-user-login-profile</a></li>
+<li><a href=https://www.44bits.io/ko/post/add-signing-key-to-git-commit-by-gpg>https://www.44bits.io/ko/post/add-signing-key-to-git-commit-by-gpg</a></li>
+<li><a href=https://www.phildev.net/pgp/gpgtrust.html>https://www.phildev.net/pgp/gpgtrust.html</a></li>
 </ul>
 </div>
 </section>
