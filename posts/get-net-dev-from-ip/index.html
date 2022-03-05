@@ -1,0 +1,117 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>ip: 리눅스 네트워크 장치 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>ip: 리눅스 네트워크 장치</h2>
+<small class=date>Sun Mar 6, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/linux class=tag>linux</a>
+<a href=https://flavono123.github.io/tags/network class=tag>network</a>
+</div>
+</div>
+<div class=content><p>리눅스에서 <a href=https://linux.die.net/man/8/ip>ip</a> 명령을 통해 네트워크 장치를 확인하고 구성할 수 있다. 그런데 이더넷 카드 이름이 언젠가부터(?) eth*가 아닌 enp*s*로 나오고 있다. &lsquo;언젠가&rsquo;는 리눅스를 VMWare에 처음 설치해봤던 학생 때이고 지금은 시간이 많이 지났다. eth는 이더넷이란 이름에 찰싹 달라 붙어 받아 들였지만, eno* 또는 enp*s* 역시 이더넷 카드를 뜻하는건지 궁금해졌다. 이번에도 알게 된 점 그리고 모르기로 한 부분을 나눠 정리한다.</p>
+<h2 id=predictable-network-interface-names>Predictable Network Interface Names</h2>
+<p>위 같은 변화는 systemd가 나오며 시작됐다(정확하게는 <a href=https://lwn.net/Articles/531850/>v197</a>라는 배포판에서 이다). 과거엔 간단하게 eth 뒤에 인덱스를 붙여도 드라이버가 찾을 수 있었지만, 오늘 날의 네트워크 구성 기술에선 이름을 쉽게 바꿀 수 있고 같은 이름으로도 여러 곳에서 사용할 수 있어 적합하지 않다고 한다.</p>
+<p>그래서 예측 가능한(predictable) 이름을 사용하기로 했다. 여러 개정 끝에 나온 룰은 다음과 같다.</p>
+<blockquote>
+<ol>
+<li>Names incorporating Firmware/BIOS provided index numbers for on-board devices (example: eno1)</li>
+<li>Names incorporating Firmware/BIOS provided PCI Express hotplug slot index numbers (example: ens1)</li>
+<li>Names incorporating physical/geographical location of the connector of the hardware (example: enp2s0)</li>
+<li>Names incorporating the interfaces&rsquo;s MAC address (example: enx78e7d1ea46da)</li>
+<li>Classic, unpredictable kernel-native ethX naming (example: eth0)</li>
+</ol>
+</blockquote>
+<p>&mldr; 보드, PCI등 하드웨어 관련한것은 바꿔 꼽으면서 디버깅 할 수도 없기 때문에 그러려니 했다(구글에서 PCI, PCI Express, 슬롯, 버스, 보드 등 이미지를 보고 뭔지 잘 모르겠지만 으응~했다 ㅎㅎ). 그렇다하더라도 내가 궁금한 경우에 해당하는 세번째의 설명이 추상적이다. p와 s 뒤의 인덱스는 각각 PCI의 버스와 슬롯 위치를 뜻한다.
+이 <a href=https://unix.stackexchange.com/questions/134483/why-is-my-ethernet-interface-called-enp0s10-instead-of-eth0>답변</a>에서 보기 쉽게 설명하고 <a href=https://www.freedesktop.org/software/systemd/man/systemd.net-naming-scheme.html>매뉴얼</a>도 자세히 보면 나온다. 내가 보기엔 더 알아볼 수 없는 이름이지만 드라이버가 참 찾기 쉽겠구나.. 싶었다.</p>
+<p>난 버추얼박스에 우분투를 띄워서 확인했는데, 그럼 가상 머신은 어떻게 PCI를 구현한걸까? 인터페이스 이름과 대조하여 검증할 수 있을까? <a href=https://www.virtualbox.org/manual/ch06.html>버추얼막스 매뉴얼</a> PCI 이야기가 쓰여 있지만 어질어질해서 그냥 이 부분은 몰라도 되겠다 하고 말았다(&mldr;).</p>
+<h2 id=ip>ip</h2>
+<p>하드웨어는 최대한 추상화해서 이해하자. enp*s* 같은 인터페이스 이름 뿐만 아니라 ip 명령의 결과도 대충 느낌적으로 알고 있기 때문에 이번에 정리해본다.</p>
+<p>ip addr 명령을 ubuntu focal에서 실행해봤다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ruby data-lang=ruby><span style=color:#66d9ef>Vagrant</span><span style=color:#f92672>.</span>configure(<span style=color:#e6db74>&#34;2&#34;</span>) <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>config<span style=color:#f92672>|</span>
+  config<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>box <span style=color:#f92672>=</span> <span style=color:#e6db74>&#34;ubuntu/focal64&#34;</span>
+  config<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>box_version <span style=color:#f92672>=</span> <span style=color:#e6db74>&#34;20220215.1.0&#34;</span>
+  <span style=color:#66d9ef>end</span>
+<span style=color:#66d9ef>end</span>
+</code></pre></div><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>vagrant@ubuntu-focal:~$ ip addr
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu <span style=color:#ae81ff>65536</span> qdisc noqueue state UNKNOWN group default qlen <span style=color:#ae81ff>1000</span>
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+2: enp0s3: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu <span style=color:#ae81ff>1500</span> qdisc fq_codel state UP group default qlen <span style=color:#ae81ff>1000</span>
+    link/ether 02:10:bc:02:65:4d brd ff:ff:ff:ff:ff:ff
+    inet 10.0.2.15/24 brd 10.0.2.255 scope global dynamic enp0s3
+       valid_lft 79730sec preferred_lft 79730sec
+    inet6 fe80::10:bcff:fe02:654d/64 scope link 
+       valid_lft forever preferred_lft forever
+</code></pre></div><ul>
+<li>첫째 줄 가장 앞, 콜론 앞에 있는 숫자는 인터페이스 인덱스(interface index; ifindex)</li>
+<li>다음은 인터페이스 네임</li>
+<li>플래그 요약(있는 것만 설명)
+<ul>
+<li>UP: 켜짐, 패킷을 받아 커널어 넣을 수 있는 상태</li>
+<li>LOOPBACK: 다른 호스트와 통신하지 않음(보내는 모든 패킷이 되돌아옴)</li>
+<li>BROADCAST: 같은 링크(스위치)의 호스트에게 모두 패킷을 보냄</li>
+<li>MULTICAST: 같은 링크의 부분 그룹 호스트에게 패킷을 보냄, BROADCAST는 MULTICAST의 특수한 경우이다</li>
+</ul>
+</li>
+<li>MTU(Max transmission unit)를 바이트로 나타냄(65536, 1500)</li>
+<li>qdisc(queueing discpline)</li>
+<li>그룹</li>
+<li>큐 길이(qlen 1000), 이 이상의 큐의 패킷은 드랍됨</li>
+<li>둘째 줄 link/ 뒤는(loopback, ether) 하드웨어 종류, 맥(MAC) 주소와 브로드캐스트 주소</li>
+<li>inet과 inet6는 각각 IP(v4), IPv6 link와 같이 인터페이스 주소와 브로드캐스트 주소</li>
+<li>scope
+<ul>
+<li>global: the address is globally valid.</li>
+<li>site: (IPv6 only) the address is site local, i.e. it is valid inside this site.</li>
+<li>link: the address is link local, i.e. it is valid only on this device.</li>
+<li>host: the address is valid only inside this host.</li>
+</ul>
+</li>
+<li>플래그
+<ul>
+<li>dynamic: DHCP에 의해 동적 할당됨, 유효 시간(valid_lft)이 있음</li>
+</ul>
+</li>
+<li>lft은 lifetime을 뜻하고 동적 할당된 경우에 값이 있다. 같게 설정되어 있어서 invalid 후에 바로 handoff 될 것 같다</li>
+</ul>
+<p>로컬에 VM으로 k8s 클러스터 구성하려다 여기까지 와 버렸다. 그만 알아보자.</p>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://www.freedesktop.org/wiki/Software/systemd/>https://www.freedesktop.org/wiki/Software/systemd/</a></li>
+<li><a href=https://askubuntu.com/questions/704035/no-eth0-listed-in-ifconfig-a-only-enp0s3-and-lo>https://askubuntu.com/questions/704035/no-eth0-listed-in-ifconfig-a-only-enp0s3-and-lo</a></li>
+<li><a href=https://major.io/2015/08/21/understanding-systemds-predictable-network-device-names/>https://major.io/2015/08/21/understanding-systemds-predictable-network-device-names/</a></li>
+<li><a href=https://unix.stackexchange.com/questions/134483/why-is-my-ethernet-interface-called-enp0s10-instead-of-eth0>https://unix.stackexchange.com/questions/134483/why-is-my-ethernet-interface-called-enp0s10-instead-of-eth0</a></li>
+<li><a href=https://www.freedesktop.org/software/systemd/man/systemd.net-naming-scheme.html>https://www.freedesktop.org/software/systemd/man/systemd.net-naming-scheme.html</a></li>
+<li><a href=https://unix.stackexchange.com/questions/465563/how-to-understand-ifconfig-or-ip-addr-show>https://unix.stackexchange.com/questions/465563/how-to-understand-ifconfig-or-ip-addr-show</a></li>
+<li><a href=http://linux-ip.net/gl/ip-cref/ip-cref.html>http://linux-ip.net/gl/ip-cref/ip-cref.html</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
