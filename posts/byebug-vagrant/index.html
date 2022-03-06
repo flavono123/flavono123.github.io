@@ -1,0 +1,154 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Vagrant byebug로 디버깅하기 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>Vagrant byebug로 디버깅하기</h2>
+<small class=date>Mon Mar 7, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/vagrant class=tag>vagrant</a>
+<a href=https://flavono123.github.io/tags/ruby class=tag>ruby</a>
+</div>
+</div>
+<div class=content><p>Vagrant를 쓰던 중 byebug로 breakpoint를 잡고 디버깅 해보고 싶어졌다. <a href=https://nts.strzibny.name/debugging-vagrant-with-pry-byebug/>이 글</a>을 참고했으나, 난 pry, pry-byebug가 아닌 <a href=https://github.com/deivid-rodriguez/byebug>byebug</a>를 사용했다(과거엔 저렇게 썼다고 들었다). 또 글과 달리, (이젠) 맥에서 brew로 설치한 vagrant는 소스 코드를 받아 실행하지 않는걸로 보인다.</p>
+<p>먼저 원래 쓰고 있던 brew로 설치한 vagrant를 지운다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ brew uninstall vagrant
+</code></pre></div><p><a href=https://www.vagrantup.com/docs/installation/source>문서</a>대로 vagrant를 코드를 받아 설치한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ git clone https://github.com/hashicorp/vagrant.git
+❯ cd vagrant
+❯ bundle install
+❯ bundle --binstubs exec <span style=color:#75715e># Deprecation warning</span>
+❯ cd /usr/local/bin/
+❯ ln -sf /path/to/vagrant/exec/vagrant
+</code></pre></div><p><code>bundle --binstubs exec</code>을 실행하면 deprecation warning이 나올 것이다. 하지만 이대로 실행해야 한다. 최신 bundler엔 <a href=https://bundler.io/man/bundle-binstubs.1.html><code>bundle-binstubs</code></a>라는 서브 명령으로 대체됐지만 동작이 아예 다르다(<a href=https://bundler.io/v1.0/man/bundle-install.1.html>1버전 bundler를 보면 <code>--binstubs</code> 옵션 설명을 볼 수 있다</a>). 레일즈 개발하면서 한번도 사용해보지 않은 명령이다.</p>
+<p>이제 vagrant gemspec에 byebug를 추가해준다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ruby data-lang=ruby><span style=color:#75715e># /path/to/vagrant/vagrant.gemspec</span>
+<span style=color:#f92672>...</span>
+<span style=color:#75715e># Monkey patch</span>
+s<span style=color:#f92672>.</span>add_dependency <span style=color:#e6db74>&#34;byebug&#34;</span>
+<span style=color:#f92672>...</span>
+</code></pre></div><p>레일즈 개발할 때 Gemfile에 직접 add해서 역시 처음 써보는 방법이다.</p>
+<p>이제 Vagranfile에서 byebug를 찍으면 디버깅이 가능하다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ruby data-lang=ruby><span style=color:#66d9ef>Vagrant</span><span style=color:#f92672>.</span>configure(<span style=color:#e6db74>&#34;2&#34;</span>) <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>config<span style=color:#f92672>|</span>
+<span style=color:#f92672>...</span>
+  require <span style=color:#e6db74>&#39;byebug&#39;</span>; byebug
+<span style=color:#f92672>...</span>
+<span style=color:#66d9ef>end</span>
+</code></pre></div><p><code>vagrant up</code> 같은 명령을 실행하면 배포판이 아닌걸 쓴다고 주의를 준다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>You appear to be running Vagrant outside of the official installers.                                     
+Note that the installers are what ensure that Vagrant has all required                                   
+dependencies, and Vagrant assumes that these dependencies exist. By                                      
+running outside of the installer environment, Vagrant may not <span style=color:#66d9ef>function</span>                                   
+properly. To remove this warning, install Vagrant using one of the                                       
+official packages from vagrantup.com.
+</code></pre></div><h2 id=문제-해결>문제 해결?</h2>
+<p>원하는대로 Vagrantfile 내에서 breakpoint는 잘 잡힌다. 하지만 이걸로 문제를 해결한건 아니다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ruby data-lang=ruby><span style=color:#66d9ef>Vagrant</span><span style=color:#f92672>.</span>configure(<span style=color:#e6db74>&#34;2&#34;</span>) <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>config<span style=color:#f92672>|</span>
+  <span style=color:#75715e># VM1</span>
+  config<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>define <span style=color:#e6db74>&#34;audrey&#34;</span> <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>audrey<span style=color:#f92672>|</span>
+    <span style=color:#f92672>...</span>
+  <span style=color:#66d9ef>end</span>
+
+  <span style=color:#75715e># VM2</span>
+  config<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>define <span style=color:#e6db74>&#34;dismas&#34;</span> <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>dismas<span style=color:#f92672>|</span>
+    <span style=color:#f92672>...</span>
+  <span style=color:#66d9ef>end</span>
+
+  <span style=color:#75715e># VM3</span>
+  config<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>define <span style=color:#e6db74>&#34;valdwin&#34;</span> <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>valdwin<span style=color:#f92672>|</span>
+    <span style=color:#f92672>...</span>
+  <span style=color:#66d9ef>end</span>
+
+  <span style=color:#75715e># Ansible</span>
+  config<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>provision <span style=color:#e6db74>&#34;ansible&#34;</span> <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>ansible<span style=color:#f92672>|</span>
+    <span style=color:#f92672>...</span>
+  <span style=color:#66d9ef>end</span>
+<span style=color:#66d9ef>end</span>
+</code></pre></div><p>내가 문제(?)라고 생각한 부분은 위 같은 Vagrantfile에서 provisioner, 즉 ansible 동작 문제였다. 내가 기대한건 vm 세팅이 다 끝나고 ansible playbook이 전체 vm에 대해 한번 도는거였다. 하지만 vm setup과 동시에 provision도 각각 되었다.</p>
+<p>먼저 모든 vm에 대해 provision 하는 것은 limit 옵션을 all을 주어 해결할 수 있었다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ruby data-lang=ruby><span style=color:#66d9ef>Vagrant</span><span style=color:#f92672>.</span>configure(<span style=color:#e6db74>&#34;2&#34;</span>) <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>config<span style=color:#f92672>|</span>
+  <span style=color:#75715e># VM1</span>
+  <span style=color:#f92672>...</span>
+
+  <span style=color:#75715e># VM2</span>
+  <span style=color:#f92672>...</span>
+
+  <span style=color:#75715e># VM3</span>
+  <span style=color:#f92672>...</span>
+
+  <span style=color:#75715e># Ansible</span>
+  config<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>provision <span style=color:#e6db74>&#34;ansible&#34;</span> <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>ansible<span style=color:#f92672>|</span>
+    <span style=color:#f92672>...</span>
+    ansible<span style=color:#f92672>.</span>limit <span style=color:#f92672>=</span> <span style=color:#e6db74>&#34;all&#34;</span>
+    <span style=color:#f92672>...</span>
+  <span style=color:#66d9ef>end</span>
+<span style=color:#66d9ef>end</span>
+</code></pre></div><p>하지만 이렇게 하니 모든 vm에 대해 각 vm up할 때마다 실행했다. ansible이 얼마나 멱등성 있는지 테스트하기에 좋겠다만&mldr; 만약 최초 up이라면 vm1에서 실행할 땐 vm2,3 모두 unreachable이라 실패할 것이다.</p>
+<p><a href=https://www.vagrantup.com/docs/provisioning/ansible#tips-and-tricks>이러한 트릭</a>을 쓰는데, 난 위처럼 vm 이름을 인덱스로 나열한게 아니라서 원치 않는 방법이었다(코드의 vm 이름은 예시이다).</p>
+<p>그래서 ansible block에 byebug를 걸고 실행해봤지만:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ruby data-lang=ruby><span style=color:#66d9ef>Vagrant</span><span style=color:#f92672>.</span>configure(<span style=color:#e6db74>&#34;2&#34;</span>) <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>config<span style=color:#f92672>|</span>
+  <span style=color:#75715e># Ansible</span>
+  config<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>provision <span style=color:#e6db74>&#34;ansible&#34;</span> <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>ansible<span style=color:#f92672>|</span>
+    <span style=color:#f92672>...</span>
+    require <span style=color:#e6db74>&#39;byebug&#39;</span>; byebug
+    <span style=color:#f92672>...</span>
+  <span style=color:#66d9ef>end</span>
+<span style=color:#66d9ef>end</span>
+</code></pre></div><p>vagrant는 Vagrantfile의 DSL(?)을 먼저 쭉 평가한 후 실행된다. 아마 순회 가능한 객체로 담은 후에 풀어서 순서대로 하는 것 같다. 이때 provisioner가 vm마다 들어가게 될텐데&mldr; vagrant의 코드가 엄청 많았다. <a href=https://github1s.com/hashicorp/vagrant/blob/HEAD/plugins/kernel_v2/config/vm.rb>vm.rb</a> 하나 보다가 포기했다.</p>
+<p>그래도 배운 점은 있다. 어떤 언어 쓸 수 있다고 디버깅과 코딩까진 그리 쉽지 않다는 것. 요즘 nginx나 커널 코드 보다가 막히면 &lsquo;C를 다시 공부해?&rsquo; 이런 생각을 많이 했다(&ldquo;실제로&rdquo; 한 생각이다).. 그리고 이렇게 오만한 생각을 했던 것도 좋은 판단을 하는데 도움을 준거 같다.</p>
+<p>사실 vagrant 코드도 시간과 관심이 있으면 들여다 보는 것은 어렵진 않겠지만, <strong>효율성</strong>의 문제다. 나는 빠르게 쉽게 타협하는 법을 알고 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-ruby data-lang=ruby><span style=color:#66d9ef>Vagrant</span><span style=color:#f92672>.</span>configure(<span style=color:#e6db74>&#34;2&#34;</span>) <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>config<span style=color:#f92672>|</span>
+  <span style=color:#75715e># VM1</span>
+  config<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>define <span style=color:#e6db74>&#34;audrey&#34;</span> <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>audrey<span style=color:#f92672>|</span>
+    <span style=color:#f92672>...</span>
+  <span style=color:#66d9ef>end</span>
+
+  <span style=color:#75715e># VM2</span>
+  config<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>define <span style=color:#e6db74>&#34;dismas&#34;</span> <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>dismas<span style=color:#f92672>|</span>
+    <span style=color:#f92672>...</span>
+  <span style=color:#66d9ef>end</span>
+
+  <span style=color:#75715e># VM3</span>
+  config<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>define <span style=color:#e6db74>&#34;valdwin&#34;</span> <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>valdwin<span style=color:#f92672>|</span>
+    <span style=color:#f92672>...</span>
+    <span style=color:#75715e># Ansible</span>
+    <span style=color:#75715e># provisioning &#34;after&#34; the valdwin setup</span>
+    valdwin<span style=color:#f92672>.</span>vm<span style=color:#f92672>.</span>provision <span style=color:#e6db74>&#34;ansible&#34;</span> <span style=color:#66d9ef>do</span> <span style=color:#f92672>|</span>ansible<span style=color:#f92672>|</span>
+      <span style=color:#f92672>...</span>
+      ansible<span style=color:#f92672>.</span>limit <span style=color:#f92672>=</span> <span style=color:#e6db74>&#34;all&#34;</span>
+      <span style=color:#f92672>...</span>
+    <span style=color:#66d9ef>end</span>
+  <span style=color:#66d9ef>end</span>
+<span style=color:#66d9ef>end</span>
+</code></pre></div><p>내 눈엔 valdwin만 provisioning 하는것 같아서 이 방법을 안쓰고 싶었는데.. 나중에 정말~ 못 참겠다 싶으면, 그리고 맨 처음의 Vagrantfile처럼 쓰는 것이 더 타당하다는 근거와 vagrant 코드에 기여하고 싶은 욕심이 생기면 그 때 vagrant가 어떻게 루비로 vm을 올리고 provision 하는지 살펴봐야겠다.</p>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://nts.strzibny.name/debugging-vagrant-with-pry-byebug/>https://nts.strzibny.name/debugging-vagrant-with-pry-byebug/</a></li>
+<li><a href=https://www.vagrantup.com/docs/installation/source>https://www.vagrantup.com/docs/installation/source</a></li>
+<li><a href=https://www.vagrantup.com/docs/provisioning/ansible#tips-and-tricks>https://www.vagrantup.com/docs/provisioning/ansible#tips-and-tricks</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
