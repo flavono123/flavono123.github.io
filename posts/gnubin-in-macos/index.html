@@ -1,0 +1,55 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>맥에서 GNU 프로그램 사용 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>맥에서 GNU 프로그램 사용</h2>
+<small class=date>Tue Mar 15, 2022</small>
+<div class=tags>
+</div>
+</div>
+<div class=content><p>맥에 기본으로 설치된 CLI 프로그램은 BSD의 것이다. 그런데 그런 프로그램들 사용법을 알기 위해 검색하면 대부분 Linux에 설치된 GNU 프로그램 기준으로 설명하는 경우가 많다. 심지어 <code>ls</code> 도 옵션 사용이 조금 다르다(e.g. <code>-w</code> 옵션의 의미가 다르다):</p>
+<ul>
+<li><a href=https://www.freebsd.org/cgi/man.cgi?ls>https://www.freebsd.org/cgi/man.cgi?ls</a></li>
+<li><a href=https://man7.org/linux/man-pages/man1/ls.1.html>https://man7.org/linux/man-pages/man1/ls.1.html</a></li>
+</ul>
+<p>이 때문에 맥에서 참고한 같은 명령을 치고 결과가 다르거나 오류가 발생하는 경우가 꽤 있다. 따라서 맥에서도 GNU 프로그램을 사용하는게 속편한것 같다.</p>
+<p>GNU 프로그램은 brew를 통해 받을 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>brew install autoconf bash binutils coreutils diffutils ed findutils flex gawk <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>    gnu-indent gnu-sed gnu-tar gnu-which gpatch grep gzip less m4 make nano <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>    screen watch wdiff wget
+</code></pre></div><p>이를 기본 프로그램으로 사용하기 위해 <code>PATH</code> 변수 앞에 붙여 준다. 매뉴얼도 GNU 것이 나오도록 한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#66d9ef>if</span> type brew &amp;&gt;/dev/null; <span style=color:#66d9ef>then</span>
+  brew_prefix<span style=color:#f92672>=</span><span style=color:#66d9ef>$(</span>brew --prefix<span style=color:#66d9ef>)</span>
+  <span style=color:#66d9ef>for</span> d in <span style=color:#e6db74>${</span>brew_prefix<span style=color:#e6db74>}</span>/opt/*/libexec/gnubin; <span style=color:#66d9ef>do</span> export PATH<span style=color:#f92672>=</span>$d:$PATH; <span style=color:#66d9ef>done</span>
+  <span style=color:#66d9ef>for</span> d in <span style=color:#e6db74>${</span>brew_prefix<span style=color:#e6db74>}</span>/opt/*/libexec/gnuman; <span style=color:#66d9ef>do</span> export MANPATH<span style=color:#f92672>=</span>$d:$MANPATH; <span style=color:#66d9ef>done</span>
+<span style=color:#66d9ef>fi</span>
+</code></pre></div><hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://gist.github.com/skyzyx/3438280b18e4f7c490db8a2a2ca0b9da>https://gist.github.com/skyzyx/3438280b18e4f7c490db8a2a2ca0b9da</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
