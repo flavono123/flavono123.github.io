@@ -1,0 +1,220 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>여러 호스트에 간단한 명령하기(Ansible vs. PSSH) | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>여러 호스트에 간단한 명령하기(Ansible vs. PSSH)</h2>
+<small class=date>Thu Mar 24, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/ansible class=tag>ansible</a>
+<a href=https://flavono123.github.io/tags/pssh class=tag>pssh</a>
+</div>
+</div>
+<div class=content><p>이 글은 프로비저닝 툴로써 Ansible과 PSSH를 비교하는 글이 아니다. 간단한 명령을 할 때 Ansible과 PSSH 둘 다 사용해보고 비교하는 글이다.</p>
+<p>나는 프로비저닝 툴로썬 Ansible을 이미 쓰고 있는데, 막상 간단한 명령을 하려니 &ldquo;PSSH를 쓰는게 더 쉬운가?&rdquo; 라는 생각이 들었다. 상황은 간단하게 각 호스트의 공인 IP를 알아내는 것이다. 각 호스트에서 <code>curl ifconfig.me</code> 를 실행하고 출력을 확인해야 한다.</p>
+<h2 id=pssh>PSSH</h2>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ pssh --version
+2.3.1
+</code></pre></div><h4 id=호스트-인자로-인벤토리-파일-활용>호스트 인자로 인벤토리 파일 활용</h4>
+<p>앞서 말한 듯 Ansible을 사용하고 있는 상황이기 때문에 PSSH의 호스트 인자로 Ansible의 인벤토리 INI 파일을 쓸 것이다. 인벤토리 파일을 정의하는 것 나름이겠지만, 어쨌든 ssh 접속할 수 있는 호스트명을 포함하고 있을 것이다(어쩌면 호스트변수 yaml 파일에 있을 것이다). 나의 경우는 INI 파일 컨벤션이 다음과 같다:</p>
+<pre tabindex=0><code>&lt;type&gt;_host1 ansible_host=host1 [...]
+...
+
+[&lt;type&gt;_servers]
+&lt;type&gt;_host1
+...
+</code></pre><ul>
+<li><code>&lt;type>_host1</code>: Ansible 호스트명(hosts)을 용도에 따른 시맨틱 이름인, 서버 타입(<code>&lt;type></code>)과 실제 ssh 접속에 사용하는 hostname을 <code>_</code> 로 잇는다</li>
+<li><code>[&lt;type>_servers</code>]: 그룹명은 간단하게 타입 뒤에 <code>_servers</code>를 붙인다(e.g. widget_servers)</li>
+<li><code>ansible_host=host1 [...]</code>: <code>ansible_</code>로 시작하는 몇몇 호스트 변수는 INI 파일에 그대로 쓰고 있다(왜 이건 yaml에 안썼을까 싶다 .. 🤔)</li>
+</ul>
+<p>이런 조건에서 나는 <code>&lt;type>_host1</code> 에서 호스트명을 파싱하며 PSSH 호스트 인자를 만들기로 했다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat &lt;invetory_file&gt; | grep -vE <span style=color:#e6db74>&#39;^\[&#39;</span> |<span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  awk <span style=color:#e6db74>&#39;NF {sub(&#34;&lt;type&gt;_&#34;, &#34;&#34;, $1); print $1}&#39;</span> |<span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  sort | uniq |<span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  xargs -I<span style=color:#f92672>{}</span> echo -H <span style=color:#f92672>{}</span> |<span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  tr <span style=color:#e6db74>&#39;\n&#39;</span> <span style=color:#e6db74>&#39; &#39;</span>
+-H host1 -H host2 -H host3
+</code></pre></div><ul>
+<li><code>grep -vE '^\['</code>: 그룹 정의 라인을 제외한다</li>
+<li><code>awk 'NF {sub("&lt;type>_", "", $1); print $1}'</code>: 공백 줄을 제거하고, Ansible 호스트명에서 <code>&lt;type>_</code>을 제거하여 SSH 호스트명만 남긴다</li>
+<li><code>sort | uniq</code>: 중복을 제거한다(위에 호스트 변수 정의 때문에 중복이 있음)</li>
+<li><code>xargs -I{} echo -H {}</code>: 호스트명을 &ldquo;-H &ldquo;에 매핑하고</li>
+<li><code>tr '\n' ' '</code>: 각 라인을 공백으로 합친다</li>
+</ul>
+<p><code>awk</code>나 map join(<code>xargs</code>, <code>tr</code>)를 더 잘 쓰면 명령을 줄일 수 있을거 같다.</p>
+<p>또는 <code>ansible_host</code> 가 호스트 변수 yaml 파일에 정의되어 있다면, yaml만 파싱하면 되기 때문에 더욱 쉬울 것이다. <code>&lt;type></code>을 widget이라 하고 인벤토리 파일 전체를 yaml로 쓰면 다음과 같을 것이고:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#f92672>widget_servers</span>:
+  <span style=color:#f92672>hosts</span>:
+    <span style=color:#f92672>widget_host1</span>:
+      <span style=color:#f92672>ansible_host</span>: <span style=color:#ae81ff>host1</span>
+    <span style=color:#f92672>widget_host2</span>:
+      <span style=color:#f92672>ansible_host</span>: <span style=color:#ae81ff>host2</span>
+    <span style=color:#f92672>widget_host3</span>:
+      <span style=color:#f92672>ansible_host</span>: <span style=color:#ae81ff>host3</span>
+</code></pre></div><p>yq로 파싱하여 모든 ansible_host를 읽는다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat host.yaml | yq <span style=color:#e6db74>&#39;.widget_servers.hosts[&#34;*&#34;].ansible_host&#39;</span> |<span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>   xargs -I<span style=color:#f92672>{}</span> echo -H <span style=color:#f92672>{}</span> |<span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>   tr <span style=color:#e6db74>&#39;\n&#39;</span> <span style=color:#e6db74>&#39; &#39;</span>
+-H host1 -H host2 -H host3
+</code></pre></div><h4 id=명령하고-출력-다루기>명령하고 출력 다루기</h4>
+<p>이 명령 결과를 인자로 주어 PSSH 명령을 해본다(나는 다시 INI 파일의 경우로)</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ pssh <span style=color:#66d9ef>$(</span>cat &lt;inventory_file&gt; grep -vE <span style=color:#e6db74>&#39;^\[&#39;</span> | awk <span style=color:#e6db74>&#39;NF {sub(&#34;&lt;type&gt;&#34;, &#34;&#34;, $1); print $1}&#39;</span> | sort | uniq | xargs -I<span style=color:#f92672>{}</span> echo -H <span style=color:#f92672>{}</span> | tr <span style=color:#e6db74>&#39;\n&#39;</span> <span style=color:#e6db74>&#39; &#39;</span><span style=color:#66d9ef>)</span><span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>   curl ifconfig.me
+<span style=color:#f92672>[</span>1<span style=color:#f92672>]</span> 12:47:14 <span style=color:#f92672>[</span>SUCCESS<span style=color:#f92672>]</span> host3
+<span style=color:#f92672>[</span>2<span style=color:#f92672>]</span> 12:47:14 <span style=color:#f92672>[</span>SUCCESS<span style=color:#f92672>]</span> host1
+<span style=color:#f92672>[</span>3<span style=color:#f92672>]</span> 12:47:14 <span style=color:#f92672>[</span>SUCCESS<span style=color:#f92672>]</span> host2
+</code></pre></div><p>PSSH는 실행하는 곳에선 각 호스트 성공 실패 여부만 출력하기 때문에 보낸 명령, <code>curl ifconfig.me</code>, 의 출력을 볼 수 없다. <code>-i</code> 옵션을 주면 보낸 명령의 표준 출력을 출력하지만, 에러도 같이 출력한다.</p>
+<p>따라서 표준 출력만 출력하는 <code>--inline-stdout</code>을 쓰거나 <code>-i</code> 옵션과 <code>curl -s ifconfig.me</code>를 같이 사용하여 curl에서 표준 에러를 없애는 법이 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># 호스트 인자 만드는 명령을 $(ansible_inventory_to_pssh_host) 로 대체</span>
+❯ pssh <span style=color:#66d9ef>$(</span>ansible_inventory_to_pssh_host<span style=color:#66d9ef>)</span> -i curl -s ifconfig.me
+<span style=color:#f92672>[</span>1<span style=color:#f92672>]</span> 13:11:32 <span style=color:#f92672>[</span>SUCCESS<span style=color:#f92672>]</span> host2
+223.xxx.yyy.zzz<span style=color:#f92672>[</span>2<span style=color:#f92672>]</span> 13:11:32 <span style=color:#f92672>[</span>SUCCESS<span style=color:#f92672>]</span> host3
+223.xxx.yyy.zzz<span style=color:#f92672>[</span>3<span style=color:#f92672>]</span> 13:11:32 <span style=color:#f92672>[</span>SUCCESS<span style=color:#f92672>]</span> host1
+223.xxx.yyy.zzz
+
+❯ pssh <span style=color:#66d9ef>$(</span>ansible_inventory_to_pssh_host<span style=color:#66d9ef>)</span> -i curl -s ifconfig.me
+<span style=color:#f92672>[</span>1<span style=color:#f92672>]</span> 13:11:34 <span style=color:#f92672>[</span>SUCCESS<span style=color:#f92672>]</span> host3
+223.xxx.yyy.zzz<span style=color:#f92672>[</span>2<span style=color:#f92672>]</span> 13:11:34 <span style=color:#f92672>[</span>SUCCESS<span style=color:#f92672>]</span> host1
+223.xxx.yyy.zzz<span style=color:#f92672>[</span>3<span style=color:#f92672>]</span> 13:11:34 <span style=color:#f92672>[</span>SUCCESS<span style=color:#f92672>]</span> host2
+223.xxx.yyy.zzz
+</code></pre></div><p>출력이 조금 이상하다. curl의 출력인 IP가 개행을 포함하지 않고 넘어와 다음 호스트 성공에 대한 메세지와 같은 줄에 출력된다. 예시의 경우는 아주 간단해서 한 눈에 결과를 파악하는데 어려움은 없다(실제로 나는 공인 IP가 모두 같은 호스트에 명령했다). 하지만 호스트가 훨씬 많거나 명령의 결과나 양식이 조금 더 복잡해지면 PSSH가 뭉쳐진 결과를 다루는데 어려움이 있을 것이다.</p>
+<h2 id=ansible>Ansible</h2>
+<p>PSSH는 명령을 보낼 호스트명 인자를 만드는데에 공수가 많이 들어갔다. 하지만 Ansible은 인벤토리 파일을 그대로 쓸 것이기 때문에 문제가 없다. 또 실질적(?)으로 유효한 점도 있다. Ansible을 쓰고 있다면 형상관리가 되고 있을 것이라 호스트명과 그룹 등을 원하는대로 다루기 쉬울 것이다. 반면 PSSH는 자주 쓰는 명령이 아니라, 위에서 소개한 방법으로 Ansible 인벤토리 코드가 바뀔 때 호스트 파일을 만들어야 할 것이다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ansible --version
+ansible <span style=color:#f92672>[</span>core 2.11.6<span style=color:#f92672>]</span>
+  config file <span style=color:#f92672>=</span> /etc/ansible/ansible.cfg
+  ...<span style=color:#f92672>(</span>opaque<span style=color:#f92672>)</span>...
+  python version <span style=color:#f92672>=</span> 3.8.8 <span style=color:#f92672>(</span>default, Nov <span style=color:#ae81ff>23</span> 2021, 14:07:49<span style=color:#f92672>)</span> <span style=color:#f92672>[</span>Clang 13.0.0 <span style=color:#f92672>(</span>clang-1300.0.29.3<span style=color:#f92672>)]</span>
+  jinja version <span style=color:#f92672>=</span> 3.0.3
+  libyaml <span style=color:#f92672>=</span> True
+</code></pre></div><p>Ansible ad-hoc 명령에 대해 짧게 설명한다. 많은 사람들이 ansible-playbook 명령보다 오히려 ansible 명령이 더 어색할 수도 있다. 이미 있는 인프라를 구조를 갖추어 코드로 옮기면 playbook을 바로 사용했을 것이고 나도 그렇다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ansible &lt;group&gt; -i &lt;inventory_file&gt; -m &lt;module&gt; -a &lt;module_args&gt;
+</code></pre></div><p>Playbook이 아닌 모듈과 모듈의 인자를 지정하여 마치 단일 태스크처럼 실행할 수 있다. 지금 하고 있는 예시로 명령한다면:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ansible &lt;group&gt; -i &lt;invenotry_file&gt; -m command -a <span style=color:#e6db74>&#34;/usr/bin/curl -s ifconfig.me&#34;</span>
+host2 | CHANGED | rc<span style=color:#f92672>=</span><span style=color:#ae81ff>0</span> &gt;&gt;
+223.xxx.yyy.zzz
+host3 | CHANGED | rc<span style=color:#f92672>=</span><span style=color:#ae81ff>0</span> &gt;&gt;
+223.xxx.yyy.zzz
+host1 | CHANGED | rc<span style=color:#f92672>=</span><span style=color:#ae81ff>0</span> &gt;&gt;
+223.xxx.yyy.zzz
+</code></pre></div><p>command 모듈에 실행하려는 명령을 인자로 주었다. PSSH 출력보다 실행 호스트와 출력이 바로 다음 줄에 나와 조금 더 정돈된 모습을 보여준다.</p>
+<h4 id=모듈-출력을-포함해-json으로-처리하기>모듈 출력을 포함해 JSON으로 처리하기</h4>
+<p>단순히 쉘에 명령을 날리는게 아니라 Ansible을 쓰는 장점을 이용하기 위해 curl에 해당하는 <a href=https://docs.ansible.com/ansible/latest/collections/ansible/builtin/uri_module.html>uri</a> 빌트인 모듈을 사용해봤다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ansible &lt;group&gt; -i &lt;inventory_file&gt; -m uri -a <span style=color:#e6db74>&#34;
+</span><span style=color:#e6db74>    url=https://ifconfig.me
+</span><span style=color:#e6db74>    return_content=yes
+</span><span style=color:#e6db74>    http_agent=curl/7.64.1&#34;</span>
+</code></pre></div><ul>
+<li><code>url</code>: curl과 달리 프로토콜을 명시해주어야 한다.</li>
+<li><code>return_content=yes</code>: 요청의 응답(<code>content</code> 필드)이 포함되게 한다.</li>
+<li><code>http_agent=curl/7.64.1</code>: ifconfig.me는 agent에 따라 출력을 달리 준다(브라우저에서 접속하여 확인해보자). 따라서 IP 주소만 응답 받도록 curl 명령할 때와 같게 해주었다.</li>
+</ul>
+<p>출력은 다음과 같다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>type_host1 | SUCCESS <span style=color:#f92672>=</span>&gt; <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;access_control_allow_origin&#34;</span>: <span style=color:#e6db74>&#34;*&#34;</span>,
+    <span style=color:#e6db74>&#34;alt_svc&#34;</span>: <span style=color:#e6db74>&#34;clear&#34;</span>,
+    <span style=color:#e6db74>&#34;ansible_facts&#34;</span>: <span style=color:#f92672>{</span>
+        <span style=color:#e6db74>&#34;discovered_interpreter_python&#34;</span>: <span style=color:#e6db74>&#34;/usr/bin/python3&#34;</span>
+    <span style=color:#f92672>}</span>,
+    <span style=color:#e6db74>&#34;changed&#34;</span>: false,
+    <span style=color:#e6db74>&#34;connection&#34;</span>: <span style=color:#e6db74>&#34;close&#34;</span>,
+    <span style=color:#e6db74>&#34;content&#34;</span>: <span style=color:#e6db74>&#34;223.xxx.yyy.zzz&#34;</span>,
+    <span style=color:#e6db74>&#34;content_length&#34;</span>: <span style=color:#e6db74>&#34;15&#34;</span>,
+    <span style=color:#e6db74>&#34;content_type&#34;</span>: <span style=color:#e6db74>&#34;text/plain; charset=utf-8&#34;</span>,
+    ...<span style=color:#f92672>(</span>생략<span style=color:#f92672>)</span>
+<span style=color:#f92672>}</span>
+type_host2 | SUCCESS <span style=color:#f92672>=</span>&gt; <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;access_control_allow_origin&#34;</span>: <span style=color:#e6db74>&#34;*&#34;</span>,
+    <span style=color:#e6db74>&#34;alt_svc&#34;</span>: <span style=color:#e6db74>&#34;clear&#34;</span>,
+    <span style=color:#e6db74>&#34;ansible_facts&#34;</span>: <span style=color:#f92672>{</span>
+        <span style=color:#e6db74>&#34;discovered_interpreter_python&#34;</span>: <span style=color:#e6db74>&#34;/usr/bin/python3&#34;</span>
+    <span style=color:#f92672>}</span>,
+    <span style=color:#e6db74>&#34;changed&#34;</span>: false,
+    <span style=color:#e6db74>&#34;connection&#34;</span>: <span style=color:#e6db74>&#34;close&#34;</span>,
+    <span style=color:#e6db74>&#34;content&#34;</span>: <span style=color:#e6db74>&#34;223.xxx.yyy.zzz&#34;</span>,
+    <span style=color:#e6db74>&#34;content_length&#34;</span>: <span style=color:#e6db74>&#34;15&#34;</span>,
+    <span style=color:#e6db74>&#34;content_type&#34;</span>: <span style=color:#e6db74>&#34;text/plain; charset=utf-8&#34;</span>,
+    ...<span style=color:#f92672>(</span>생략<span style=color:#f92672>)</span>
+<span style=color:#f92672>}</span>
+type_host3 | SUCCESS <span style=color:#f92672>=</span>&gt; <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;access_control_allow_origin&#34;</span>: <span style=color:#e6db74>&#34;*&#34;</span>,
+    <span style=color:#e6db74>&#34;alt_svc&#34;</span>: <span style=color:#e6db74>&#34;clear&#34;</span>,
+    <span style=color:#e6db74>&#34;ansible_facts&#34;</span>: <span style=color:#f92672>{</span>
+        <span style=color:#e6db74>&#34;discovered_interpreter_python&#34;</span>: <span style=color:#e6db74>&#34;/usr/bin/python3&#34;</span>
+    <span style=color:#f92672>}</span>,
+    <span style=color:#e6db74>&#34;changed&#34;</span>: false,
+    <span style=color:#e6db74>&#34;connection&#34;</span>: <span style=color:#e6db74>&#34;close&#34;</span>,
+    <span style=color:#e6db74>&#34;content&#34;</span>: <span style=color:#e6db74>&#34;223.xxx.yyy.zzz&#34;</span>,
+    <span style=color:#e6db74>&#34;content_length&#34;</span>: <span style=color:#e6db74>&#34;15&#34;</span>,
+    <span style=color:#e6db74>&#34;content_type&#34;</span>: <span style=color:#e6db74>&#34;text/plain; charset=utf-8&#34;</span>,
+    ...<span style=color:#f92672>(</span>생략<span style=color:#f92672>)</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><p>&ldquo;Ansible host | 성공 실패 여부 =>&rdquo; 뒤에 모듈 결과인 JSON 있고 여기엔 curl의 출력(content)를 포함해서 HTTP 응답 헤더나, ansible facts 같은 메타데이터들이 있다. 이걸 좀 다듬으면 Ad-hoc 명령의 결과를 JSON으로 쉽게 다룰 수 있어 보인다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ &lt;ansible_ad_hoc_command&gt; | sed -E <span style=color:#e6db74>&#39;s/(.*) \| FAILED\! \=&gt; \{/\{&#34;ansible_host&#34;: &#34;\1&#34;, &#34;success&#34;: false,/;
+</span><span style=color:#e6db74>                                     s/(.*) \| SUCCESS \=&gt; \{/\{&#34;ansible_host&#34;: &#34;\1&#34;, &#34;success&#34;: true,/&#39;</span>
+</code></pre></div><p>ansible_host와 성공 실패 여부 필드(success)를 포함한 JSON으로 바꿔준다. 정렬은 이상하지만, jq로 이쁘게 출력하거나 파싱할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ansible &lt;group&gt; -i &lt;inventory_file&gt; -m uri -a <span style=color:#e6db74>&#34;url=https://ifconfig.me
+</span><span style=color:#e6db74>                                                 return_content=yes
+</span><span style=color:#e6db74>                                                 http_agent=curl/7.64.1&#34;</span> |<span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>sed -E <span style=color:#e6db74>&#39;s/(.*) \| FAILED\! \=&gt; \{/\{&#34;ansible_host&#34;: &#34;\1&#34;, &#34;success&#34;: false,/;
+</span><span style=color:#e6db74>        s/(.*) \| SUCCESS \=&gt; \{/\{&#34;ansible_host&#34;: &#34;\1&#34;, &#34;success&#34;: true,/&#39;</span> |<span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>jq <span style=color:#e6db74>&#39;{&#34;host&#34;: .ansible_host, &#34;content&#34;: .content}&#39;</span>
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;host&#34;</span>: <span style=color:#e6db74>&#34;type_host2&#34;</span>,
+  <span style=color:#e6db74>&#34;content&#34;</span>: <span style=color:#e6db74>&#34;223.xxx.yyy.zzz&#34;</span>
+<span style=color:#f92672>}</span>
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;host&#34;</span>: <span style=color:#e6db74>&#34;type_host1&#34;</span>,
+  <span style=color:#e6db74>&#34;content&#34;</span>: <span style=color:#e6db74>&#34;223.xxx.yyy.zzz&#34;</span>
+<span style=color:#f92672>}</span>
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;host&#34;</span>: <span style=color:#e6db74>&#34;type_host3&#34;</span>,
+  <span style=color:#e6db74>&#34;content&#34;</span>: <span style=color:#e6db74>&#34;223.xxx.yyy.zzz&#34;</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><p>나는 이런 간단한 명령을 여러 호스트에 날리는 상황에선, PSSH 보단 Ansible ad-hoc으로 작업을 하려고 한다. 인벤토리를 그대로 쓸 수 있고 인벤토리 파일은 형상관리가 잘 될 수 있다는 점이 제일 큰 이유이다. 결과를 JSON으로 처리할 수 있는 것도 장점이다. 또 Ansible 모듈의 장점(e.g. 멱등성 보장)과 모듈도 이것저것 써보게 되는게 낫다고 생각해서 그렇다.</p>
+<h2 id=정리>정리</h2>
+<ul>
+<li>PSSH
+<ul>
+<li>형상관리 되고 있는 Ansible 인벤토리 파일을 조작해서 호스트 인자로 쓸 수 있다.</li>
+<li>명령 결과가 plain text라 조작(reduce등)이 어렵다.</li>
+</ul>
+</li>
+<li>Ansible
+<ul>
+<li><a href=https://gist.github.com/flavono123/65522ea36a1c957c74daac0dd99c8180>결과를 조금 바꾸면</a> JSON으로 처리할 수 있다.</li>
+</ul>
+</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://linux.die.net/man/1/pssh>https://linux.die.net/man/1/pssh</a></li>
+<li><a href=https://ansible-tips-and-tricks.readthedocs.io/en/latest/ansible/commands/>https://ansible-tips-and-tricks.readthedocs.io/en/latest/ansible/commands/</a></li>
+<li><a href=https://docs.ansible.com/ansible/latest/collections/ansible/builtin/uri_module.html>https://docs.ansible.com/ansible/latest/collections/ansible/builtin/uri_module.html</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
