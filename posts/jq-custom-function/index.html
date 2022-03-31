@@ -1,0 +1,360 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>jq 커스텀 함수 사용(Elasticsearch 프로퍼티 매핑 JSON 만들기) | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>jq 커스텀 함수 사용(Elasticsearch 프로퍼티 매핑 JSON 만들기)</h2>
+<small class=date>Wed Mar 30, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/jq class=tag>jq</a>
+<a href=https://flavono123.github.io/tags/elasticsearch class=tag>elasticsearch</a>
+</div>
+</div>
+<div class=content><p><a href=https://www.elastic.co/guide/en/elasticsearch/reference/current/dynamic-field-mapping.html>Elasticsearch의 인덱스된 문서 필드에 데이터 타입이 동적으로 매핑이 된다</a>. 하지만 인덱스 크기를 제한하기 위해 회사에선 <a href=https://www.elastic.co/guide/en/elasticsearch/reference/current/explicit-mapping.html>명시적 매핑</a>을 사용하고 있다.</p>
+<p>그리고 회사에서 ES는 대부분 로그를 검색하는 용도로 쓰기 위해 사용하고 있다. 즉, ES 문서가 로그이다. 로그는 대부분 JSON이다. 그리고 매핑의 바디 역시 JSON이다. 따라서 내가 만들려는 것은 다음 같은 JSON 입출력의 jq 필터이다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># 입력</span>
+❯ cat input.json | jq
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;a&#34;</span>: 11,
+  <span style=color:#e6db74>&#34;b&#34;</span>: 0.1
+<span style=color:#f92672>}</span>
+
+<span style=color:#75715e># 출력</span>
+❯ cat output.json | jq
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;a&#34;</span>: <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;integer&#34;</span>
+  <span style=color:#f92672>}</span>,
+  <span style=color:#e6db74>&#34;b&#34;</span>: <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;float&#34;</span>
+  <span style=color:#f92672>}</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><p>ES 매핑의 문법을 자세히 모르더라도 이해할 수 있도록 예시 JSON을 구성했다. <a href=https://www.elastic.co/guide/en/elasticsearch/reference/current/mapping-types.html>ES 데이터 타입</a>이나 <a href=https://www.elastic.co/guide/en/elasticsearch/reference/current/mapping-params.html>매핑 파라미터</a>를 모르더라도 위 입출력을 이해하는데 어렵지 않다.</p>
+<p>앞으로 글에 나올 필터는 내가 실제로 사용하는 필터이다. 하지만 모든 ES 매핑 문법을 커버하지 않는다. 즉, JSON 문서로부터 특수한 ES 매핑을 만드는 필터이다. 따라서 ES 문서로 JSON을 쓰고 있다해서 이 필터를 그대로 복붙해 쓴다면 원하는 매핑 바디가 안 나올 수 있다는 이야기이다.</p>
+<p>또 글은 jq 자체 기능에 대해서도 다룬다. 커스텀 함수 정의와 사용은, 예제가 되는 ES JSON 문서와 매핑 바디라는 경우와 무관하게, JSON 입출력으로 하는 필터를 만드는 것에 대한 일반적인 이야기이다.</p>
+<h2 id=숫자형-처리>숫자형 처리</h2>
+<p>예시로 쓸 입력 JSON은 다음과 같다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat input.json | jq
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;a&#34;</span>: 11,
+  <span style=color:#e6db74>&#34;b&#34;</span>: 0.1,
+  <span style=color:#e6db74>&#34;c&#34;</span>: <span style=color:#e6db74>&#34;flavono123&#34;</span>,
+  <span style=color:#e6db74>&#34;d&#34;</span>: <span style=color:#e6db74>&#34;2022-03-28T05:01:37.768Z&#34;</span>,
+  <span style=color:#e6db74>&#34;e&#34;</span>: <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;f&#34;</span>: <span style=color:#e6db74>&#34;darkestclimber&#34;</span>,
+    <span style=color:#e6db74>&#34;g&#34;</span>: <span style=color:#e6db74>&#34;2022-03-01T04:38:14+09:00&#34;</span>
+  <span style=color:#f92672>}</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><p>먼저 &ldquo;a&rdquo;, &ldquo;b&rdquo; 키에 대해서 앞선 출력처럼 만들려고 한다. jq의 데이터 타입과 ES의것은 서로 비슷한 점이 있다. 그래서 jq <code>type</code> 빌트인 함수를 활용한다. 단순하게 모든 값에 대해 필터만 하더라도:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat input.json | jq <span style=color:#e6db74>&#39;with_entries(.value |= type)&#39;</span>
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;a&#34;</span>: <span style=color:#e6db74>&#34;number&#34;</span>,
+  <span style=color:#e6db74>&#34;b&#34;</span>: <span style=color:#e6db74>&#34;number&#34;</span>,
+  <span style=color:#e6db74>&#34;c&#34;</span>: <span style=color:#e6db74>&#34;string&#34;</span>,
+  <span style=color:#e6db74>&#34;d&#34;</span>: <span style=color:#e6db74>&#34;string&#34;</span>,
+  <span style=color:#e6db74>&#34;e&#34;</span>: <span style=color:#e6db74>&#34;object&#34;</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><p>그럴싸한 결과가 나온다. <code>|=</code> update assignment로써 오른쪽 절로 값(<code>.value</code>)를 대체한다.</p>
+<p>우린 &ldquo;a&rdquo;, &ldquo;b"가 같은 number가 아닌 integer와 float으로 구분하고 싶다. 앞서 말한듯 <a href=https://www.elastic.co/guide/en/elasticsearch/reference/current/number.html>ES의 숫자형 필드 타입은 훨씬 많지만</a>, 간단한 경우만 다룬다. 따라서 구두점(<code>.</code>)의 존재 여부로 float과 integer를 나눌 것이다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat input.json | jq <span style=color:#e6db74>&#39;with_entries(.value |= if tostring | test(&#34;\\.&#34;) then &#34;float&#34; else &#34;integer&#34; end)&#39;</span>
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;a&#34;</span>: <span style=color:#e6db74>&#34;integer&#34;</span>,
+  <span style=color:#e6db74>&#34;b&#34;</span>: <span style=color:#e6db74>&#34;float&#34;</span>,
+  <span style=color:#e6db74>&#34;c&#34;</span>: <span style=color:#e6db74>&#34;integer&#34;</span>,
+  <span style=color:#e6db74>&#34;d&#34;</span>: <span style=color:#e6db74>&#34;float&#34;</span>,
+  <span style=color:#e6db74>&#34;e&#34;</span>: <span style=color:#e6db74>&#34;integer&#34;</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><ul>
+<li><code>tostring</code>: 먼저 숫자 값을 문자열로 바꿔준다.</li>
+<li><code>test("\\.")</code>: 바꾼 문자열이 구두점을 포함하는지 확인한다.
+<ul>
+<li>백슬래시를 이스케이프 해주어야 한다(=두개를 써주었다). 이는 쉘에서 <a href=https://www.pcre.org/>PCRE</a> 동작과 관련 있을듯 한데 나중에 알아봐야겠다.</li>
+</ul>
+</li>
+</ul>
+<p>&ldquo;a"와 &ldquo;b"는 잘 구분됐지만, 원치 않는 &ldquo;c&rdquo;, &ldquo;d&rdquo;, &ldquo;e"도 숫자형 타입이 됐다. jq 타입이 number인것에 대해서만 처리하자:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat input.json | jq <span style=color:#e6db74>&#39;with_entries(.value |= if type==&#34;number&#34; then if tostring | test(&#34;\\.&#34;) then &#34;float&#34; else &#34;integer&#34; end else type end)&#39;</span>
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;a&#34;</span>: <span style=color:#e6db74>&#34;integer&#34;</span>,
+  <span style=color:#e6db74>&#34;b&#34;</span>: <span style=color:#e6db74>&#34;float&#34;</span>,
+  <span style=color:#e6db74>&#34;c&#34;</span>: <span style=color:#e6db74>&#34;string&#34;</span>,
+  <span style=color:#e6db74>&#34;d&#34;</span>: <span style=color:#e6db74>&#34;string&#34;</span>,
+  <span style=color:#e6db74>&#34;e&#34;</span>: <span style=color:#e6db74>&#34;object&#34;</span>
+<span style=color:#f92672>}</span>
+
+</code></pre></div><p>중첩 if 문이 되었다. 너무 복잡하고 너무 길다. 쉘 명령줄에서 작업하는것보다 이제 파일을 쓰는게 낫다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat script
+with_entries<span style=color:#f92672>(</span>.value |<span style=color:#f92672>=</span> <span style=color:#66d9ef>if</span> type<span style=color:#f92672>==</span><span style=color:#e6db74>&#34;number&#34;</span> <span style=color:#66d9ef>then</span> <span style=color:#66d9ef>if</span> tostring | test<span style=color:#f92672>(</span><span style=color:#e6db74>&#34;\\.&#34;</span><span style=color:#f92672>)</span> <span style=color:#66d9ef>then</span> <span style=color:#e6db74>&#34;float&#34;</span> <span style=color:#66d9ef>else</span> <span style=color:#e6db74>&#34;integer&#34;</span> end <span style=color:#66d9ef>else</span> type end<span style=color:#f92672>)</span>
+
+❯ cat input.json | jq -f script
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;a&#34;</span>: <span style=color:#e6db74>&#34;integer&#34;</span>,
+  <span style=color:#e6db74>&#34;b&#34;</span>: <span style=color:#e6db74>&#34;float&#34;</span>,
+  <span style=color:#e6db74>&#34;c&#34;</span>: <span style=color:#e6db74>&#34;string&#34;</span>,
+  <span style=color:#e6db74>&#34;d&#34;</span>: <span style=color:#e6db74>&#34;string&#34;</span>,
+  <span style=color:#e6db74>&#34;e&#34;</span>: <span style=color:#e6db74>&#34;object&#34;</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><p>그래도 이중 if문의 복잡함은 해결되지 않았다. 단계적으로 개행을 하고 함수로 분리한다. 매 수정마다 <code>jq -f</code>로 테스트 해본다(이 과정은 생략했다):</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># 개행</span>
+❯ cat script
+with_entries<span style=color:#f92672>(</span>.value |<span style=color:#f92672>=</span>
+  <span style=color:#66d9ef>if</span> type<span style=color:#f92672>==</span><span style=color:#e6db74>&#34;number&#34;</span> <span style=color:#66d9ef>then</span>
+    <span style=color:#66d9ef>if</span> tostring | test<span style=color:#f92672>(</span><span style=color:#e6db74>&#34;\\.&#34;</span><span style=color:#f92672>)</span> <span style=color:#66d9ef>then</span>
+      <span style=color:#e6db74>&#34;float&#34;</span>
+    <span style=color:#66d9ef>else</span>
+      <span style=color:#e6db74>&#34;integer&#34;</span>
+    end
+  <span style=color:#66d9ef>else</span>
+    type
+  end<span style=color:#f92672>)</span>
+
+<span style=color:#75715e># 이중 if문 전체 함수로 분리</span>
+❯ cat script
+def estype:
+  <span style=color:#66d9ef>if</span> type<span style=color:#f92672>==</span><span style=color:#e6db74>&#34;number&#34;</span> <span style=color:#66d9ef>then</span>
+    <span style=color:#66d9ef>if</span> tostring | test<span style=color:#f92672>(</span><span style=color:#e6db74>&#34;\\.&#34;</span><span style=color:#f92672>)</span> <span style=color:#66d9ef>then</span>
+      <span style=color:#e6db74>&#34;float&#34;</span>
+    <span style=color:#66d9ef>else</span>
+      <span style=color:#e6db74>&#34;integer&#34;</span>
+    end
+  <span style=color:#66d9ef>else</span>
+    type
+  end;
+
+with_entries<span style=color:#f92672>(</span>.value |<span style=color:#f92672>=</span> estype<span style=color:#f92672>)</span>
+
+<span style=color:#75715e># 한번 더 함수로 분리</span>
+❯ cat script
+def floatorinteger:
+  <span style=color:#66d9ef>if</span> tostring | test<span style=color:#f92672>(</span><span style=color:#e6db74>&#34;\\.&#34;</span><span style=color:#f92672>)</span> <span style=color:#66d9ef>then</span>
+    <span style=color:#e6db74>&#34;float&#34;</span>
+  <span style=color:#66d9ef>else</span>
+    <span style=color:#e6db74>&#34;integer&#34;</span>
+  end;
+
+def estype:
+  <span style=color:#66d9ef>if</span> type<span style=color:#f92672>==</span><span style=color:#e6db74>&#34;number&#34;</span> <span style=color:#66d9ef>then</span>
+    floatorinteger
+  <span style=color:#66d9ef>else</span>
+    type
+  end;
+
+with_entries<span style=color:#f92672>(</span>.value |<span style=color:#f92672>=</span> estype<span style=color:#f92672>)</span>
+</code></pre></div><p>jq는 여러 공백과 개행 모두 하나의 delimeter로 파싱한다. 따라서 한줄에 길게 썼던 필터 공백마다 개행을 하거나 탭으로 가독성을 높일 수 있다.</p>
+<p>jq 함수 정의는 <code>def &lt;function> ... end;</code>와 같이 한다. 여기서 정의한것처럼 arity가 0인 함수는 입력이 있다고 가정하고 그 입력을 처리한다.</p>
+<h2 id=문자형-처리>문자형 처리</h2>
+<p>&ldquo;c&rdquo;, &ldquo;d&rdquo; 그리고 &ldquo;e.f&rdquo;, &ldquo;e.g&rdquo; 는 jq의 string 타입이다. 하지만 &ldquo;d"와 &ldquo;e.f&rdquo; 모양을 보면 타임스탬프이다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat input.json | jq <span style=color:#e6db74>&#39;[.d, .e.g][]&#39;</span>
+<span style=color:#e6db74>&#34;2022-03-28T05:01:37.768Z&#34;</span>
+<span style=color:#e6db74>&#34;2022-03-01T04:38:14+09:00&#34;</span>
+</code></pre></div><p>ES에선 이를 <a href=https://www.elastic.co/guide/en/elasticsearch/reference/current/date.html>date 타입</a>으로 저장하면 검색, 연산, 집계에 타임스탬프로써 편하게 쓸 수 있다. 따라서 이러한 &ldquo;date"로 만들어 주자:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat script
+def floatorinteger:
+  <span style=color:#66d9ef>if</span> tostring | test<span style=color:#f92672>(</span><span style=color:#e6db74>&#34;\\.&#34;</span><span style=color:#f92672>)</span> <span style=color:#66d9ef>then</span>
+    <span style=color:#e6db74>&#34;float&#34;</span>
+  <span style=color:#66d9ef>else</span>
+    <span style=color:#e6db74>&#34;integer&#34;</span>
+  end;
+
+def dateorstring:
+  <span style=color:#66d9ef>if</span> test<span style=color:#f92672>(</span><span style=color:#e6db74>&#34;\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}&#34;</span><span style=color:#f92672>)</span> <span style=color:#66d9ef>then</span>
+    <span style=color:#e6db74>&#34;date&#34;</span>
+  <span style=color:#66d9ef>else</span>
+    type
+  end;
+
+def estype:
+  <span style=color:#66d9ef>if</span> type<span style=color:#f92672>==</span><span style=color:#e6db74>&#34;number&#34;</span> <span style=color:#66d9ef>then</span>
+    floatorinteger
+  <span style=color:#66d9ef>elif</span> type<span style=color:#f92672>==</span><span style=color:#e6db74>&#34;string&#34;</span> <span style=color:#66d9ef>then</span>
+    dateorstring
+  <span style=color:#66d9ef>else</span>
+    type
+  end;
+
+with_entries<span style=color:#f92672>(</span>.value |<span style=color:#f92672>=</span> estype<span style=color:#f92672>)</span>
+
+❯ cat input.json | jq -f script
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;a&#34;</span>: <span style=color:#e6db74>&#34;integer&#34;</span>,
+  <span style=color:#e6db74>&#34;b&#34;</span>: <span style=color:#e6db74>&#34;float&#34;</span>,
+  <span style=color:#e6db74>&#34;c&#34;</span>: <span style=color:#e6db74>&#34;string&#34;</span>,
+  <span style=color:#e6db74>&#34;d&#34;</span>: <span style=color:#e6db74>&#34;date&#34;</span>,
+  <span style=color:#e6db74>&#34;e&#34;</span>: <span style=color:#e6db74>&#34;object&#34;</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><ul>
+<li><code>dateorstring</code>: if문이 생길 곳을 미리 함수로 분리했다.</li>
+<li><code>test("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}")</code>: 문자열이 &lsquo;yyyy-mm-ddThh:MM:ss&rsquo; 형식과 매치하는지 검사한다. 모든 <a href=https://ko.wikipedia.org/wiki/ISO_8601>ISO 8601</a> 정규식과 매치하지 않았다. 타임존도 고려하지 않는다.</li>
+</ul>
+<p>ES에서 문자열은 타입 이름은 <a href=https://www.elastic.co/guide/en/elasticsearch/reference/current/text.html>text</a>이다. ES는 전문 검색을 지원하기 때문에 text는 단순한 문자열이 아니다. ES가 전문(full text)을 처리하는 것에 대한 설명은 글 주제에서 벗어나 생략한다.</p>
+<p>이 text 필드 전체를 문자열(string)처럼 쓰기 위해 아래에 <a href=https://www.elastic.co/guide/en/elasticsearch/reference/current/keyword.html>keyword</a> 필드를 정의한다. 전문이 아닌 로그의 한 필드 문자열로써 괜찮은 처리이다. 따라서 text 필드는 <code>{"type": "float"}</code>처럼 한 객체로 필드 매핑 정의하지 않고 다음처럼 보다 길다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-json data-lang=json>{
+  <span style=color:#f92672>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;text&#34;</span>,
+  <span style=color:#f92672>&#34;fields&#34;</span>: {
+    <span style=color:#f92672>&#34;keyword&#34;</span>: {
+      <span style=color:#f92672>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;keyword&#34;</span>,
+      <span style=color:#f92672>&#34;ignore_above&#34;</span>: <span style=color:#ae81ff>256</span>
+    }
+  }
+}
+</code></pre></div><p><code>dateorstring</code>에서 date가 아닌 경우 이 객체를 반환해주자. 이름도 <code>dateortext</code>로 바꾼다. 이에 맞춰 <code>floatorinteger</code>나 <code>estype</code>에서 타입 문자열을 &ldquo;type&rdquo; 키의 값에 넣은 객체를 반환한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat input.json | jq -f script
+def floatorinteger:
+  <span style=color:#66d9ef>if</span> tostring | test<span style=color:#f92672>(</span><span style=color:#e6db74>&#34;\\.&#34;</span><span style=color:#f92672>)</span> <span style=color:#66d9ef>then</span>
+    <span style=color:#f92672>{</span> <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;float&#34;</span> <span style=color:#f92672>}</span>
+  <span style=color:#66d9ef>else</span>
+    <span style=color:#f92672>{</span> <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;integer&#34;</span> <span style=color:#f92672>}</span>
+  end;
+
+def dateorstring:
+  <span style=color:#66d9ef>if</span> test<span style=color:#f92672>(</span><span style=color:#e6db74>&#34;\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}&#34;</span><span style=color:#f92672>)</span> <span style=color:#66d9ef>then</span>
+    <span style=color:#f92672>{</span> <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;date&#34;</span> <span style=color:#f92672>}</span>
+  <span style=color:#66d9ef>else</span>
+    <span style=color:#f92672>{</span>
+      <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;text&#34;</span>,
+      <span style=color:#e6db74>&#34;fields&#34;</span>: <span style=color:#f92672>{</span>
+        <span style=color:#e6db74>&#34;keyword&#34;</span>: <span style=color:#f92672>{</span>
+          <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;keyword&#34;</span>,
+          <span style=color:#e6db74>&#34;ignore_above&#34;</span>: <span style=color:#ae81ff>256</span>
+        <span style=color:#f92672>}</span>
+      <span style=color:#f92672>}</span>
+    <span style=color:#f92672>}</span>
+  end;
+
+def estype:
+  <span style=color:#66d9ef>if</span> type<span style=color:#f92672>==</span><span style=color:#e6db74>&#34;number&#34;</span> <span style=color:#66d9ef>then</span>
+    floatorinteger
+  <span style=color:#66d9ef>elif</span> type<span style=color:#f92672>==</span><span style=color:#e6db74>&#34;string&#34;</span> <span style=color:#66d9ef>then</span>
+    dateorstring
+  <span style=color:#66d9ef>else</span>
+    <span style=color:#f92672>{</span> <span style=color:#e6db74>&#34;type&#34;</span>: type <span style=color:#f92672>}</span>
+  end;
+
+with_entries<span style=color:#f92672>(</span>.value |<span style=color:#f92672>=</span> estype<span style=color:#f92672>)</span>
+
+❯ cat input.json | jq -f script
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;a&#34;</span>: <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;integer&#34;</span>
+  <span style=color:#f92672>}</span>,
+  <span style=color:#e6db74>&#34;b&#34;</span>: <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;float&#34;</span>
+  <span style=color:#f92672>}</span>,
+  <span style=color:#e6db74>&#34;c&#34;</span>: <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;text&#34;</span>,
+    <span style=color:#e6db74>&#34;fields&#34;</span>: <span style=color:#f92672>{</span>
+      <span style=color:#e6db74>&#34;keyword&#34;</span>: <span style=color:#f92672>{</span>
+        <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;keyword&#34;</span>,
+        <span style=color:#e6db74>&#34;ignore_above&#34;</span>: <span style=color:#ae81ff>256</span>
+      <span style=color:#f92672>}</span>
+    <span style=color:#f92672>}</span>
+  <span style=color:#f92672>}</span>,
+  <span style=color:#e6db74>&#34;d&#34;</span>: <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;date&#34;</span>
+  <span style=color:#f92672>}</span>,
+  <span style=color:#e6db74>&#34;e&#34;</span>: <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;object&#34;</span>
+  <span style=color:#f92672>}</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><h2 id=객체-처리>객체 처리</h2>
+<p>값이 객체인 &ldquo;e"는 단순히 object라고 출력하고 있다. 회사에선 이런 하위 필드도 접근할 수 있도록 각각의 프로퍼티로 매핑하고 있다(반대로 지금처럼 객체 자체로써 매핑하고 싶다면 <a href=https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html>nested</a> 타입을 매핑해야할 것이다).</p>
+<p>이번에 할 일은 값의 타입이 객체(object)일 경우 &ldquo;properites&rdquo; 키 아래에 각 객체 타입을 매핑한 2중 JSON을 반환하는 것이다. 위의 결과는 중복되기 때문에 &ldquo;e&rdquo; 키만 결과를 출력한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat script
+def floatorinteger:
+  <span style=color:#66d9ef>if</span> tostring | test<span style=color:#f92672>(</span><span style=color:#e6db74>&#34;\\.&#34;</span><span style=color:#f92672>)</span> <span style=color:#66d9ef>then</span>
+    <span style=color:#f92672>{</span> <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;float&#34;</span> <span style=color:#f92672>}</span>
+  <span style=color:#66d9ef>else</span>
+    <span style=color:#f92672>{</span> <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;integer&#34;</span> <span style=color:#f92672>}</span>
+  end;
+
+def dateorstring:
+  <span style=color:#66d9ef>if</span> test<span style=color:#f92672>(</span><span style=color:#e6db74>&#34;\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}&#34;</span><span style=color:#f92672>)</span> <span style=color:#66d9ef>then</span>
+    <span style=color:#f92672>{</span> <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;date&#34;</span> <span style=color:#f92672>}</span>
+  <span style=color:#66d9ef>else</span>
+    <span style=color:#f92672>{</span>
+      <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;text&#34;</span>,
+      <span style=color:#e6db74>&#34;fields&#34;</span>: <span style=color:#f92672>{</span>
+        <span style=color:#e6db74>&#34;keyword&#34;</span>: <span style=color:#f92672>{</span>
+          <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;keyword&#34;</span>,
+          <span style=color:#e6db74>&#34;ignore_above&#34;</span>: <span style=color:#ae81ff>256</span>
+        <span style=color:#f92672>}</span>
+      <span style=color:#f92672>}</span>
+    <span style=color:#f92672>}</span>
+  end;
+
+def estype:
+  <span style=color:#66d9ef>if</span> type<span style=color:#f92672>==</span><span style=color:#e6db74>&#34;number&#34;</span> <span style=color:#66d9ef>then</span>
+    floatorinteger
+  <span style=color:#66d9ef>elif</span> type<span style=color:#f92672>==</span><span style=color:#e6db74>&#34;string&#34;</span> <span style=color:#66d9ef>then</span>
+    dateorstring
+  <span style=color:#66d9ef>else</span>
+    <span style=color:#f92672>{</span> <span style=color:#e6db74>&#34;type&#34;</span>: type <span style=color:#f92672>}</span>
+  end;
+
+def esprop:
+  <span style=color:#66d9ef>if</span> type<span style=color:#f92672>==</span><span style=color:#e6db74>&#34;object&#34;</span> <span style=color:#66d9ef>then</span>
+    <span style=color:#f92672>{</span><span style=color:#e6db74>&#34;properties&#34;</span>: with_entries<span style=color:#f92672>(</span>.value |<span style=color:#f92672>=</span> estype<span style=color:#f92672>)}</span>
+  <span style=color:#66d9ef>else</span>
+    estype
+  end;
+
+with_entries<span style=color:#f92672>(</span>.value |<span style=color:#f92672>=</span> esprop<span style=color:#f92672>)</span> | .e
+
+
+❯ cat input.json | jq -f script
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;properties&#34;</span>: <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;f&#34;</span>: <span style=color:#f92672>{</span>
+      <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;text&#34;</span>,
+      <span style=color:#e6db74>&#34;fields&#34;</span>: <span style=color:#f92672>{</span>
+        <span style=color:#e6db74>&#34;keyword&#34;</span>: <span style=color:#f92672>{</span>
+          <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;keyword&#34;</span>,
+          <span style=color:#e6db74>&#34;ignore_above&#34;</span>: <span style=color:#ae81ff>256</span>
+        <span style=color:#f92672>}</span>
+      <span style=color:#f92672>}</span>
+    <span style=color:#f92672>}</span>,
+    <span style=color:#e6db74>&#34;g&#34;</span>: <span style=color:#f92672>{</span>
+      <span style=color:#e6db74>&#34;type&#34;</span>: <span style=color:#e6db74>&#34;date&#34;</span>
+    <span style=color:#f92672>}</span>
+  <span style=color:#f92672>}</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><p>jq에서 커스텀 함수를 정의하고 파일에 필터를 가져와 ES 매핑 JSON을 만들었다. 다음 포스팅에선 정의한 커스텀 함수를 라이브러리로 사용하는 법을 소개할 것이다. 원랜 같이 하려고 했지만 분량 조절에 실패했다 😹.</p>
+<h2 id=정리>정리</h2>
+<ul>
+<li>jq 커스텀 함수는 필터에 <code>def &lt;function>[(arg1, [...])] ... end;</code> 로 정의한다.</li>
+<li>jq 필터에서 개행을 포함한 공백들은 하나의 delimeter로 파싱한다.
+<ul>
+<li>따라서 <code>-f</code> 옵션과 함께 파일에 필터를 쓰면 가독성 좋게 포매팅 할 수 있다.</li>
+<li>합성 필터가 길어지거나, 특히 커스텀 함수 정의가 길면 파일을 쓰는것이 좋다.</li>
+</ul>
+</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://stedolan.github.io/jq/manual/v1.6/>https://stedolan.github.io/jq/manual/v1.6/</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
