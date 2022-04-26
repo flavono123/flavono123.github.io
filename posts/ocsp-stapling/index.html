@@ -1,0 +1,473 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Nginx OCSP Stapling 경고 재현하기 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>Nginx OCSP Stapling 경고 재현하기</h2>
+<small class=date>Tue Apr 26, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/websecure class=tag>websecure</a>
+<a href=https://flavono123.github.io/tags/nginx class=tag>nginx</a>
+</div>
+</div>
+<div class=content><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>nginx: <span style=color:#f92672>[</span>warn<span style=color:#f92672>]</span> <span style=color:#e6db74>&#34;ssl_stapling&#34;</span> ignored, issuer certificate not found <span style=color:#66d9ef>for</span> certificate <span style=color:#e6db74>&#34;/path/to/cert&#34;</span>
+</code></pre></div><p>TLS 인증서를 교체하고 Nginx 설정 테스트(<code>nginx -t</code>)를 해보았는데 위 경고가 나왔다. 테스트할 서버부터 적용했는데 인증과 파일 서빙 자체는 잘 되었다. 위 메세지로 검색하다 보니 CRL, OCSP 등의 처음 보는 개념을 알게 됐고, 로컬 Nginx에서 위와 같은 문제를 재현하고 해결할 수 있었다.</p>
+<h3 id=crl>CRL</h3>
+<p>먼저 앞서 말한 CRL과 OCSP는 인증서 폐기(Certificate Revocation)에 관련한 용어이다. 보통 인증서에 문제가 있으면 새로 발급을 받더라도 이전 것이 폐기 됐는지 안했던터라 조금 생소했다. CA에서 열심히 하겠지..? 아무튼 CRL, OCSP는 이 인증서가 폐기된 인증서인지 확인하는 방법이다.</p>
+<p>그 중 과거의 방법인 CRL(Certificate Revocation List)는 CA 폐기된 인증서 목록을 제공하고, 클라이언트는 인증시 이 목록을 보고 인증서가 유효한지 판단하는 것이다.</p>
+<p>CRL는 인증서에 확장키 <code>crlDistributionPoints</code>에 URI 목록이 제공된다. DigiCert 인증서를 예로 들면 다음과 같다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl x509 -in /path/to/cert.pem -noout -ext crlDistributionPoints
+X509v3 CRL Distribution Points:
+    Full Name:
+      URI:http://crl3.digicert.com/DigiCertTLSRSASHA2562020CA1-4.crl
+    Full Name:
+      URI:http://crl4.digicert.com/DigiCertTLSRSASHA2562020CA1-4.crl
+
+<span style=color:#75715e># 키 이름에 확신이 없으면 그렙질로 확인</span>
+❯ openssl x509 -in /path/to/cert.pem -noout -text | grep -i crl
+            X509v3 CRL Distribution Points:
+                  URI:http://crl3.digicert.com/DigiCertTLSRSASHA2562020CA1-4.crl
+                  URI:http://crl4.digicert.com/DigiCertTLSRSASHA2562020CA1-4.crl
+</code></pre></div><p>URI는 CRL를 암호화하여 응답한다. <a href=https://www.openssl.org/docs/manmaster/man1/openssl-crl.html><code>openssl-crl</code></a> 로 디코딩할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ wget -qO - http://crl3.digicert.com/DigiCertTLSRSASHA2562020CA1-4.crl | openssl crl -noout -text | head -25
+Certificate Revocation List <span style=color:#f92672>(</span>CRL<span style=color:#f92672>)</span>:
+        Version <span style=color:#ae81ff>2</span> <span style=color:#f92672>(</span>0x1<span style=color:#f92672>)</span>
+        Signature Algorithm: sha256WithRSAEncryption
+        Issuer: C <span style=color:#f92672>=</span> US, O <span style=color:#f92672>=</span> DigiCert Inc, CN <span style=color:#f92672>=</span> DigiCert TLS RSA SHA256 <span style=color:#ae81ff>2020</span> CA1
+        Last Update: Apr <span style=color:#ae81ff>25</span> 06:51:39 <span style=color:#ae81ff>2022</span> GMT
+        Next Update: May  <span style=color:#ae81ff>2</span> 06:51:39 <span style=color:#ae81ff>2022</span> GMT
+        CRL extensions:
+            X509v3 Authority Key Identifier:
+                B7:6B:A2:EA:A8:AA:84:8C:79:EA:B4:DA:0F:98:B2:C5:95:76:B9:F4
+            X509v3 CRL Number:
+                <span style=color:#ae81ff>211</span>
+            X509v3 Issuing Distribution Point: critical
+                Full Name:
+                  URI:http://crl3.digicert.com/DigiCertTLSRSASHA2562020CA1-4.crl
+Revoked Certificates:
+    Serial Number: 048A6B01889FA7BEF34AC92DAAC36079
+        Revocation Date: Jun <span style=color:#ae81ff>22</span> 00:31:11 <span style=color:#ae81ff>2021</span> GMT
+        CRL entry extensions:
+            X509v3 CRL Reason Code:
+                Key Compromise
+    Serial Number: 098AB8A98137F3432A18DE8C1B7F6D2F
+        Revocation Date: Jul  <span style=color:#ae81ff>3</span> 05:58:20 <span style=color:#ae81ff>2021</span> GMT
+        CRL entry extensions:
+            X509v3 CRL Reason Code:
+                Key Compromise
+
+❯ wget -qO - http://crl3.digicert.com/DigiCertTLSRSASHA2562020CA1-4.crl | openssl crl  -noout -text | grep <span style=color:#e6db74>&#34;Serial Number&#34;</span> | wc -l
+<span style=color:#ae81ff>51470</span>
+</code></pre></div><p>하나의 CRL에만 폐기 인증서가 5만여개가 된다. 실제로 응답시간도 꽤 있고 head로 자르지 않으면 출력이 오래 걸릴만큼 폐기 인증서가 많다는 것을 느낄 수 있다. 이런 단점 때문에 현재 CRL는 잘 쓰이지 않는다. 실제로 현재는 비어 있는 CRL도 많다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ wget -qO - http://crl4.digicert.com/TERENAeScienceSSLCA3.crl | openssl crl -noout -text
+Certificate Revocation List <span style=color:#f92672>(</span>CRL<span style=color:#f92672>)</span>:
+        Version <span style=color:#ae81ff>2</span> <span style=color:#f92672>(</span>0x1<span style=color:#f92672>)</span>
+        Signature Algorithm: sha256WithRSAEncryption
+        Issuer: C <span style=color:#f92672>=</span> NL, ST <span style=color:#f92672>=</span> Noord-Holland, L <span style=color:#f92672>=</span> Amsterdam, O <span style=color:#f92672>=</span> TERENA, CN <span style=color:#f92672>=</span> TERENA eScience SSL CA <span style=color:#ae81ff>3</span>
+        Last Update: Apr <span style=color:#ae81ff>26</span> 07:04:02 <span style=color:#ae81ff>2022</span> GMT
+        Next Update: May  <span style=color:#ae81ff>3</span> 07:04:02 <span style=color:#ae81ff>2022</span> GMT
+        CRL extensions:
+            X509v3 Authority Key Identifier:
+                29:AA:1B:6E:30:F9:30:67:63:A5:87:26:0C:AC:F1:81:9C:69:74:49
+            X509v3 CRL Number:
+                <span style=color:#ae81ff>31163</span>
+No Revoked Certificates.
+    Signature Algorithm: sha256WithRSAEncryption
+    Signature Value:
+        c4:c8:3a:54:9a:f0:a6:57:33:0e:57:e2:03:64:3e:e1:2b:1d:
+        36:1f:5f:2c:f2:9b:48:92:b4:f3:42:93:f1:e3:72:58:5b:67:
+        5b:d2:0d:b3:d8:bf:d4:76:e9:3a:d7:e8:dd:42:a1:18:d5:b0:
+        fa:8a:36:af:c0:07:ac:32:b2:0d:e1:8d:08:2e:80:25:4b:1c:
+        6c:56:25:d8:cd:d2:a1:af:42:57:0b:de:20:7a:7a:64:98:8e:
+        ce:3b:9d:07:5e:fc:ed:73:8f:c7:8d:2c:ee:53:af:2c:04:9b:
+        c5:a1:21:7f:b6:5a:49:37:b7:10:91:43:5c:29:2e:68:90:bf:
+        6a:d8:17:ed:8a:81:e7:51:f0:ad:0d:19:ab:3d:30:f3:1f:10:
+        16:3c:c1:59:0a:9d:8c:08:e5:0c:dc:e9:2a:bb:9f:6c:2d:e9:
+        2f:ac:8a:45:f1:3c:b8:14:73:aa:2b:ab:eb:25:09:c7:46:28:
+        ca:84:c7:2f:96:ee:4e:7c:cf:d6:9a:65:f1:30:24:1c:75:3d:
+        5a:f4:99:43:0c:f5:f1:f8:fa:70:37:17:ac:3d:96:93:89:b5:
+        b8:8e:0a:8f:6d:22:dc:2c:29:58:0a:40:f2:28:ef:5f:5e:a6:
+        e2:5a:eb:43:05:9b:98:e6:d4:fa:cb:c4:68:7e:f7:d8:0a:fd:
+        2c:ee:10:93
+</code></pre></div><h3 id=ocsp>OCSP</h3>
+<p>이런 CRL의 단점을 보완한 방법이 OCSP(Online Certificate Status Protocol)이다. 무거운 폐기 인증서 목록을 가져와 파싱하여 폐기 여부를 확인하는 대신, 클라이언트가 확인한 인증서의 상태를 확인하는 방법이다. 상태는 &ldquo;good&rdquo;, &ldquo;revoked&rdquo;, &ldquo;unknown&rdquo; 세가지이다. OCSP를 사용하는 인증서 TLS 요청 시 응답에 포함되어 있다. <a href=https://www.openssl.org/docs/man1.1.1/man1/openssl-s_client.html><code>openssl-s_client</code>의 <code>-status</code> 옵션</a>으로 확인할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl s_client -connect cre.ma:443 -status 2&gt;&amp;<span style=color:#ae81ff>1</span> &lt; /dev/null | grep -i ocsp -A10
+OCSP response:
+<span style=color:#f92672>======================================</span>
+OCSP Response Data:
+    OCSP Response Status: successful <span style=color:#f92672>(</span>0x0<span style=color:#f92672>)</span>
+    Response Type: Basic OCSP Response
+    Version: <span style=color:#ae81ff>1</span> <span style=color:#f92672>(</span>0x0<span style=color:#f92672>)</span>
+    Responder Id: B76BA2EAA8AA848C79EAB4DA0F98B2C59576B9F4
+    Produced At: Apr <span style=color:#ae81ff>26</span> 06:48:49 <span style=color:#ae81ff>2022</span> GMT
+    Responses:
+    Certificate ID:
+      Hash Algorithm: sha1
+      Issuer Name Hash: E4E395A229D3D4C1C31FF0980C0B4EC0098AABD8
+      Issuer Key Hash: B76BA2EAA8AA848C79EAB4DA0F98B2C59576B9F4
+      Serial Number: 018A11B52A0F60854F9A0EDA2A63B7AC
+    Cert Status: good
+</code></pre></div><p>상태는 실제 CA에 요청을 보내어 받은 응답으로, 인증서 authorityInformationAccess키에 요청 주소와 프로토콜(OCSP)가 정의되어 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl x509 -in /path/to/cert.pem -noout -text | grep -i ocsp -C1
+            Authority Information Access:
+                OCSP - URI:http://ocsp.digicert.com
+                CA Issuers - URI:http://cacerts.digicert.com/DigiCertTLSRSASHA2562020CA1-1.crt
+</code></pre></div><h3 id=ocsp-stapling>OCSP Stapling</h3>
+<p>하나의 CA 서버로만 모든 OCSP 요청을 보내면 부하가 클 것이다. CA에서 매번 OCSP 요청에 응답하지 않고, 웹 서버에 이 응답을 캐시(&ldquo;staples&rdquo;) 하는 것을 OCSP Stapling이라 한다.</p>
+<p>맨 처음 봤던 경고의 원인은 결국 OCSP도 <a href=https://letsencrypt.org/certificates/>Chain of Trust</a>로 구현되어 있기 때문이었다. 로컬에서 OCSP를 구성하여 재현해보자.</p>
+<h2 id=실습>실습</h2>
+<p>OCSP를 문제 상황과 똑같이 구현하기 위해 3단계의 Chain of Trust를 만든다. <a href=/posts/self-signed-certificate>Chain이 없는 2단계</a>와 비슷한 부분은 설명이 생략될 것이다. 또 다른 점은 OpenSSL 설정을 기본 값이 아닌 파일을 직접 만들어 인증서 관련한 키와 옵션을 정확히 알고 사용하게 될 것이다.</p>
+<p>실습할 위치에 root, root/cert, intermediate, intermediate/cert 디렉토리를 준비한다. CA와 데이터베이스, OpenSSL 설정 파일 그리고 여러 인증서를 구분하기 위함이다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ mkdir -p root root/cert intermediate intermediate/cert
+❯ tree .
+.
+├── intermediate
+│   ├── certs
+└── root
+    └── certs
+
+</code></pre></div><h3 id=opensslcnf>openssl.cnf</h3>
+<p>OpenSSL 설정 파일은 Root와 Intermediate CA용 두 개이다. 먼저 파일을 올려 놓고 각 섹션별로 필요한곳에서 다시 가져가 설명한다:</p>
+<ul>
+<li>root/openssl.cnf</li>
+</ul>
+<pre tabindex=0><code>[ ca ]
+default_ca = RootCA
+
+[ RootCA ]
+dir = root
+private_key = $dir/RootCA.key
+certificate = $dir/RootCA.crt
+new_certs_dir = $dir/certs
+database = $dir/index.txt
+policy = policy_very_loose
+serial = $dir/serial
+
+[ policy_very_loose ]
+commonName = supplied
+
+[ req ]
+distinguished_name  = req_distinguished_name
+x509_extensions     = v3_ca
+
+[ v3_ca ]
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints = critical, CA:true
+keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+
+[ v3_intermediate_ca ]
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints = critical, CA:true, pathlen:0
+keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+</code></pre><ul>
+<li>intermediate/openssl.cnf</li>
+</ul>
+<pre tabindex=0><code>[ ca ]
+default_ca = IntermediateCA
+
+[ IntermediateCA ]
+dir = intermediate
+private_key = $dir/IntermediateCA.key
+certificate = $dir/IntermediateCA.crt
+new_certs_dir = $dir/certs
+database = $dir/index.txt
+policy = policy_very_loose
+serial = $dir/serial
+
+[ policy_very_loose ]
+commonName = supplied
+
+[ req ]
+distinguished_name  = req_distinguished_name
+
+[ req_distinguished_name ]
+commonName                      = Common Name
+
+[ v3_cert ]
+basicConstraints = CA:FALSE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+subjectAltName = DNS:localhost
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+authorityInfoAccess = OCSP;URI:http://ocsp:2560
+
+[ ocsp ]
+basicConstraints = CA:FALSE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, OCSPSigning
+</code></pre><h3 id=root-ca>Root CA</h3>
+<p>Root CA용 키 쌍을 생성한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl genrsa -aes256 -out root/RootCA.key <span style=color:#ae81ff>2048</span>
+❯ chmod <span style=color:#ae81ff>400</span> root/RootCA.key
+</code></pre></div><p>Root CA는 chain 할 상위 인증서가 없으므로 CSR이 아니라 곧바로 인증서를 만든다. 그와 관련한 OpenSSL 설정은 다음이다:</p>
+<pre tabindex=0><code>[ req ]
+distinguished_name  = req_distinguished_name
+x509_extensions     = v3_ca
+
+[ req_distinguished_name ]
+commonName                      = Common Name
+
+[ v3_ca ]
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints = critical, CA:true
+keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+</code></pre><ul>
+<li><code>req_distinguished_name</code>: DN(Distinguished Name)을 정의할 때 쓰는 키를 정의한다. 실습에선 간단히 CN(Common Name)만 쓴다.</li>
+<li><code>v3_ca</code>: <code>openssl-req</code>에서 Root CA처럼 CSR이 아닌 인증서를 만들 때(옵션 <code>-x509</code>) 인증서 필드를 정의한다. 다음 설명하는 필드들은 x509 v3 확장의 명세로써 CA가 CSR로부터 인증서를 발급할 때(<code>openssl-ca</code>)도 쓰이는 옵션들이다. <a href=https://www.openssl.org/docs/manmaster/man5/x509v3_config.html>openssl x509v3_config 참고</a></li>
+</ul>
+<p>위 설정으로 Root CA 인증서를 만든다. 유효기간은 20년으로 한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ chmod <span style=color:#ae81ff>400</span> root/RootCA.key
+❯ openssl req -config root/openssl.cnf -key root/RootCA.key -new -x509 -sha256 -extensions v3_ca -out root/RootCA.crt -days <span style=color:#ae81ff>7304</span>
+Enter pass phrase <span style=color:#66d9ef>for</span> RootCA.key:
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter <span style=color:#e6db74>&#39;.&#39;</span>, the field will be left blank.
+-----
+Common Name <span style=color:#f92672>[]</span>:Root CA
+</code></pre></div><p>발급자와 주체를 확인하여 스스로 만든 인증서임을 확인한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl x509 -noout -issuer -subject -in root/RootCA.crt
+issuer<span style=color:#f92672>=</span>CN <span style=color:#f92672>=</span> Root CA
+subject<span style=color:#f92672>=</span>CN <span style=color:#f92672>=</span> Root CA
+</code></pre></div><p>또 OpenSSL 설정이 잘 적용됐는지 확인해본다(e.g. keyUsage 확장 필드):</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl x509 -noout -ext keyUsage -in root/RootCA.crt
+X509v3 Key Usage: critical
+    Digital Signature, Certificate Sign, CRL Sign
+</code></pre></div><h3 id=intermediate-ca>Intermediate CA</h3>
+<p>Intermediate CA는 Root CA에게 CSR 요청 후 인증서를 발급받는다. Root CA가 인증서 발급을 위해 필요한 옵션은 다음과 같다:</p>
+<pre tabindex=0><code>[ ca ]
+default_ca = RootCA
+
+[ RootCA ]
+dir = root
+private_key = $dir/RootCA.key
+certificate = $dir/RootCA.crt
+new_certs_dir = $dir/certs
+database = $dir/index.txt
+policy = policy_very_loose
+serial = $dir/serial
+
+[ policy_very_loose ]
+commonName = supplied
+</code></pre><ul>
+<li><code>ca</code>: <code>openssl-ca</code>시 사용할 기본 설정으로 아래 <code>RootCA</code> 섹션에서 세부 내용을 모두 정의하고 있다.</li>
+<li><code>RootCA</code>: Root CA의 인증서, 키 경로 등을 설정.
+<ul>
+<li><code>new_certs_dir</code>: 발급하는 인증서 파일을 만든다(<code>-out</code> 옵션으로 별도로 인증서 경로를 지정 가능)</li>
+<li><code>database/serial</code>: 인증서를 관리하는 DB. <code>database</code> 파일엔 목록이 쓰이고, <code>serial</code>에 쓰인 번호가 순증하며 인증서 발급. 위 <code>new_certs_dir</code>엔 <code>&lt;serial>.pem</code>(기본 PEM 인코딩)으로 인증서 파일이 쓰인다.</li>
+<li><code>policy</code>: DN의 필수, 선택 필드를 정의</li>
+</ul>
+</li>
+<li><code>policy_very_loose</code>: CN만 필수(supplied)로 지정</li>
+</ul>
+<p>먼저 DB에 해당하는 파일들을 만들어 준다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ touch root/index.txt
+❯ echo <span style=color:#ae81ff>1000</span> &gt; root/serial
+</code></pre></div><p>Intermediate CA의 키 쌍과 CSR 생성 후 Root CA에서 인증서를 발급 받는다(유효기간 10년):</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl genrsa -aes256 -out intermediate/IntermediateCA.key <span style=color:#ae81ff>2048</span>
+❯ chmod <span style=color:#ae81ff>400</span> intermediate/IntermediateCA.key
+❯ openssl req -config root/openssl.cnf -new -sha256 -key intermediate/IntermediateCA.key -out intermediate/IntermediateCA.csr
+
+❯ openssl ca -config root/openssl.cnf -extensions v3_intermediate_ca -days <span style=color:#ae81ff>3652</span> -notext -md sha256 -in intermediate/IntermediateCA.csr -out intermediate/IntermediateCA.crt
+Using configuration from openssl.cnf
+Enter pass phrase <span style=color:#66d9ef>for</span> RootCA.key:
+Check that the request matches the signature
+Signature ok
+The Subject<span style=color:#e6db74>&#39;s Distinguished Name is as follows
+</span><span style=color:#e6db74>commonName            :ASN.1 12:&#39;</span>Intermediate CA<span style=color:#960050;background-color:#1e0010>&#39;</span>
+Certificate is to be certified <span style=color:#66d9ef>until</span> Apr <span style=color:#ae81ff>23</span> 06:33:28 <span style=color:#ae81ff>2032</span> GMT <span style=color:#f92672>(</span><span style=color:#ae81ff>3652</span> days<span style=color:#f92672>)</span>
+Sign the certificate? <span style=color:#f92672>[</span>y/n<span style=color:#f92672>]</span>:y
+
+
+<span style=color:#ae81ff>1</span> out of <span style=color:#ae81ff>1</span> certificate requests certified, commit? <span style=color:#f92672>[</span>y/n<span style=color:#f92672>]</span>y
+Write out database with <span style=color:#ae81ff>1</span> new entries
+Data Base Updated
+</code></pre></div><p>Root CA DB 관련하여 위에서 설명한 내용들을 검증한다:</p>
+<pre tabindex=0><code>❯ cat root/index.txt
+V       320423063328Z           1000    unknown /CN=Intermediate CA
+
+❯ diff root/certs/1000.pem intermediate/IntermediateCA.crt
+
+❯ cat root/serial
+1001
+
+</code></pre><p>또 Intermediate CA 인증서도 Root CA것과 비슷하게 설정 값 적용을 확인한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl x509 -noout -issuer -subject -in intermediate/IntermediateCA.crt
+issuer<span style=color:#f92672>=</span>CN <span style=color:#f92672>=</span> Root CA
+subject<span style=color:#f92672>=</span>CN <span style=color:#f92672>=</span> Intermediate CA
+
+❯ openssl x509 -noout -ext keyUsage -in intermediate/IntermediateCA.crt
+X509v3 Key Usage: critical
+    Digital Signature, Certificate Sign, CRL Sign
+</code></pre></div><p>마지막으로 Chain of Trust를 확인한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl verify -CAfile root/RootCA.crt intermediate/IntermediateCA.crt
+IntermediateCA.crt: OK
+</code></pre></div><h3 id=server>Server</h3>
+<p>테스트할 Nginx 서버용 키 쌍, CSR 및 인증서를 만든다. Intermediate CA로부터 발급 받으며 위에서 Root CA의 경우와 OpenSSL 설정 설명이 거의 다 중복되기 때문에 생략한다(유효기간 397일). 서버 인증서용 x509 확장 세션(<code>v3_ca</code>)에서 한가지 의미 있는 설정은 <code>authorityInfoAccess</code>에 OCSP를 사용한다는 점이다. 이따 OCSP Responder로 할 도메인(ocsp)과 포트(2560)를 써준다:</p>
+<pre tabindex=0><code>[ v3_cert ]
+basicConstraints = CA:FALSE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+subjectAltName = DNS:localhost
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+authorityInfoAccess = OCSP;URI:http://ocsp:2560
+</code></pre><p>CA들과 달리 Nginx 서버용 인증서는 키에 passphrase를 설정하지 않았다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># Intermediate CA DB 생성</span>
+❯ touch root/index.txt
+❯ echo <span style=color:#ae81ff>1000</span> &gt; root/serial
+
+❯ openssl genrsa -out localhost.key <span style=color:#ae81ff>2048</span>
+❯ openssl req -config intermediate/openssl.cnf -new -sha256 -key localhost.key -out localhost.csr
+❯ openssl ca -config intermediate/openssl.cnf -extensions v3_cert -days <span style=color:#ae81ff>397</span> -notext -md sha256 -in localhost.csr -out localhost.crt
+</code></pre></div><p>인증서 포맷이나 체인을 검증하는 과정도 역시 생략한다.</p>
+<h3 id=ocsp-1>OCSP</h3>
+<p>OCSP 역시 Chain of Trust로 동작한다고 설명했다. x509 확장으로 설정한다:</p>
+<pre tabindex=0><code>[ ocsp ]
+basicConstraints = CA:FALSE
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, OCSPSigning
+</code></pre><ul>
+<li><code>extendedKeyUsage</code>: <code>OCSPSigning</code> 용도임을 명시한다.</li>
+</ul>
+<p>Intermeidate CA의 인증서를 발급한다. 여기서 <strong>OCSP 인증서의 CN은 요청 URI의 FQDN</strong>을 써주어야 한다. 위 localhost.crt의 authorityInfoAccess 설정과 같게 **<code>ocsp</code>**라고 써준다. 인증서 유효기간은 서버 것과 같은 397일로 한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># 키 쌍, CSR, 인증서 생성</span>
+❯ openssl genrsa -aes256 -out intermediate/ocsp.key <span style=color:#ae81ff>2048</span>
+❯ openssl req -config intermediate/openssl.cnf -new -sha256 -key intermediate/ocsp.key -out intermediate/ocsp.csr
+❯ openssl ca -config intermediate/openssl.cnf -extensions ocsp -days <span style=color:#ae81ff>397</span> -notext -md sha256 -in intermediate/ocsp.csr -out intermediate/ocsp.crt
+
+<span style=color:#75715e># Verify</span>
+❯ openssl x509 -noout -ext extendedKeyUsage -in ocsp.crt
+X509v3 Extended Key Usage: critical
+    OCSP Signing
+
+</code></pre></div><p><a href=https://linux.die.net/man/1/ocsp><code>openssl-ocsp</code></a> 명령으로 테스트용의 간단한 응답 서버(responder)를 만들 수 있다. 포트는 2560로 하였다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl ocsp -index intermediate/index.txt -CA intermediate/IntermediateCA.crt -rkey intermediate/ocsp.key -rsigner intermediate/ocsp.crt -port <span style=color:#ae81ff>2560</span>
+</code></pre></div><p>같은 명령으로 요청을 보내 테스트 할 수 있다. 이 때 CA는 Chain 하여 사용한다. 응답은 OCSP 부분만 확인한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat root/RootCA.crt intermediate/IntermediateCA.crt &gt; intermediate/ChainCA.crt
+
+❯ openssl ocsp -CAfile intermediate/ChainCA.crt -url http://127.0.0.1:2560 -resp_text -issuer intermediate/IntermediateCA.crt -cert localhost.crt | head -15
+Response verify OK
+OCSP Response Data:
+    OCSP Response Status: successful <span style=color:#f92672>(</span>0x0<span style=color:#f92672>)</span>
+    Response Type: Basic OCSP Response
+    Version: <span style=color:#ae81ff>1</span> <span style=color:#f92672>(</span>0x0<span style=color:#f92672>)</span>
+    Responder Id: CN <span style=color:#f92672>=</span> ocsp
+    Produced At: Apr <span style=color:#ae81ff>26</span> 11:48:52 <span style=color:#ae81ff>2022</span> GMT
+    Responses:
+    Certificate ID:
+      Hash Algorithm: sha1
+      Issuer Name Hash: D19EDD09C8F3985F81A9166EF1F6E96FABF207F1
+      Issuer Key Hash: D05FEC1B16A57CFE288306630CF0821B750973FF
+      Serial Number: <span style=color:#ae81ff>1002</span>
+    Cert Status: good
+    This Update: Apr <span style=color:#ae81ff>26</span> 11:48:52 <span style=color:#ae81ff>2022</span> GMT
+</code></pre></div><p>여기선 <code>-url</code>에 127.0.0.1을 주었지만, 인증서를 이용할 때는 ocsp라는 도메인 이름을 사용해야 한다. 따라서 로컬 DNS에 추가한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ grep ocsp /etc/hosts
+127.0.0.1 ocsp
+
+</code></pre></div><p>그리고 다음 설정으로 로컬에서 Nginx 서버를 실행한다:</p>
+<pre tabindex=0><code>    server {
+        listen       8443 ssl;
+        server_name  localhost;
+
+        ssl_certificate      /path/to/localhost.crt;
+        ssl_certificate_key  /path/to/localhost.key;
+
+        ssl_stapling on;
+        ssl_stapling_verify on;
+        ssl_trusted_certificate /path/to/intermediate/ChainCA.crt;
+
+    }
+</code></pre><p><code>openssl-s_client</code>로 요청 시 <code>-status</code> 옵션을 주면 응답에 OCSP로 revocation을 체크한 것을 확인할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl s_client -connect localhost:8443 -status 2&gt;&amp;<span style=color:#ae81ff>1</span> &lt; /dev/null | grep -i <span style=color:#e6db74>&#34;ocsp response&#34;</span> -A10
+OCSP response:
+<span style=color:#f92672>======================================</span>
+OCSP Response Data:
+    OCSP Response Status: successful <span style=color:#f92672>(</span>0x0<span style=color:#f92672>)</span>
+    Response Type: Basic OCSP Response
+    Version: <span style=color:#ae81ff>1</span> <span style=color:#f92672>(</span>0x0<span style=color:#f92672>)</span>
+    Responder Id: CN <span style=color:#f92672>=</span> ocsp
+    Produced At: Apr <span style=color:#ae81ff>26</span> 14:53:58 <span style=color:#ae81ff>2022</span> GMT
+    Responses:
+    Certificate ID:
+      Hash Algorithm: sha1
+      Issuer Name Hash: D19EDD09C8F3985F81A9166EF1F6E96FABF207F1
+      Issuer Key Hash: D05FEC1B16A57CFE288306630CF0821B750973FF
+      Serial Number: <span style=color:#ae81ff>1002</span>
+    Cert Status: good
+</code></pre></div><h3 id=문제-재현>문제 재현</h3>
+<p>맨 처음의 오류는 OCSP의 Chain of Trust를 끊으면 발생한다. Nginx 설정 중 다음 설정을 코멘트 처리 해보자:</p>
+<pre tabindex=0><code>        # ssl_trusted_certificate /path/to/intermediate/ChainCA.crt;
+</code></pre><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ sudo nginx -t
+nginx: <span style=color:#f92672>[</span>warn<span style=color:#f92672>]</span> <span style=color:#e6db74>&#34;ssl_stapling&#34;</span> ignored, issuer certificate not found <span style=color:#66d9ef>for</span> certificate <span style=color:#e6db74>&#34;/path/to/localhost.crt&#34;</span>
+nginx: the configuration file /usr/local/etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /usr/local/etc/nginx/nginx.conf test is successful
+</code></pre></div><p>앞서 만들어 보았듯, OCSP도 <code>rsinger/rkey</code> 옵션에 Intermediate CA가 발급한 인증서를 사용하고 인증서 체인이 되지 않았을 때 이 같은 오류가 발생한다. 이대로 Nginx를 실행하면 OCSP 응답을 받을 순 없으나 서버 자체는 HTTPS로 서빙하는데 문젠 없었다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ openssl s_client -CAfile root/RootCA.crt -connect localhost:8443 -status 2&gt;&amp;<span style=color:#ae81ff>1</span> &lt; /dev/null | grep -i <span style=color:#e6db74>&#34;ocsp response&#34;</span>
+OCSP response: no response sent
+
+</code></pre></div><p>다만 실제로 겪은 경우는 이 로컬 재현과 조금 달랐다. 실제 서버에선 Nginx 디렉티브 <code>ssl_trusted_certificate</code>을 사용하지 않고 있다. 실수는 교체하는 인증서에서 Intermediate CA를 누락했기 때문이다.</p>
+<p>DigiCert에서 <a href=https://stackoverflow.com/questions/25750890/nginx-install-intermediate-certificate>Nginx용 인증서는, 다음처럼 서버용 인증서와 Intermediate CA 인증서를 이어 붙여 보내 주는데</a> 아래 것은 빼고 인증서를 교체하여 발생했다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat localhost.crt intermediate/IntermediateCA.crt &gt; localhost.nginx.crt
+</code></pre></div><pre tabindex=0><code>-----BEGIN CERTIFICATE-----
+(localhost 인증서)
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+(Intermediate CA 인증서 - 누락한 부분)
+-----END CERTIFICATE-----
+</code></pre><p>따라서 이 문제는 <strong>OCSP의 인증서 체인을 검증할 수 없었기 때문에 발생한 문제</strong>였다. 다만 경고(warn)로 나오듯, HTTPS의 TLS에는 영향을 주지 않는 것으로 보였다.</p>
+<p>실습하며 만든 인증서나 설정 등의 파일은 <a href=https://github.com/flavono123/t/commit/d7e1f8d8fe0374bb82f7c6ad64eb74a00cae1a0a>이 커밋</a>과 같다.</p>
+<h2 id=정리>정리</h2>
+<ul>
+<li>OCSP는 인증서의 폐기 여부를 확인하는 방법이다.
+<ul>
+<li>OCSP Responder 역시 인증서를 사용하고 인증서 체인(Chain of Trust)을 따른다.</li>
+<li>Intermediate CA에서 발급한 인증서를 사용한다.</li>
+</ul>
+</li>
+<li>Nginx 인증서는 서버(Subject)와 Intermediate CA(Issuer)의 두 개의 인증서를 붙인(concat) 형태로 사용한다.</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://www.keyfactor.com/blog/what-is-a-certificate-revocation-list-crl-vs-ocsp/>https://www.keyfactor.com/blog/what-is-a-certificate-revocation-list-crl-vs-ocsp/</a></li>
+<li><a href=https://www.openssl.org/docs/>https://www.openssl.org/docs/</a></li>
+<li><a href="https://superuser.com/questions/1717279/no-crl-in-certificates-nowadays/1717305?noredirect=1#comment2649722_1717305">https://superuser.com/questions/1717279/no-crl-in-certificates-nowadays/1717305?noredirect=1#comment2649722_1717305</a></li>
+<li><a href=https://jamielinux.com/docs/openssl-certificate-authority/>https://jamielinux.com/docs/openssl-certificate-authority/</a></li>
+<li><a href=https://stackoverflow.com/questions/25750890/nginx-install-intermediate-certificate>https://stackoverflow.com/questions/25750890/nginx-install-intermediate-certificate</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
