@@ -1,0 +1,184 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Ansible 커스텀 필터 from_toml, to_toml | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>Ansible 커스텀 필터 from_toml, to_toml</h2>
+<small class=date>Tue May 3, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/ansible class=tag>ansible</a>
+</div>
+</div>
+<div class=content><p><a href=https://toml.io/en/>TOML</a>은 YAML/JSON 보단 빈도는 적지만 설정 파일 포맷으로 쓰이는 곳이 있다. 그래서인지 <a href=https://docs.ansible.com/ansible/latest/user_guide/playbooks_filters.html#formatting-data-yaml-and-json>Ansible에 <code>from_yaml</code>, <code>to_yaml</code>, <code>from_json</code>, <code>to_json</code> 등의 Jinja2 필터는 있지만</a>, TOML용 필터는 없다.</p>
+<p>쓸 일이 있기도 해서 Ansible에서 사용할 수 있는 <code>from_toml</code>, <code>to_toml</code> Jinja2 필터를 만들어 본다. 또 나는 파이썬을 잘 모르지만 필터를 작성하는데엔 무리가 없었다. 다만 같은 이유로 이 글에서 파이썬과 관련한 자세한 설명은 생략한다.</p>
+<h2 id=준비>준비</h2>
+<p>빈 경로에 다음과 같은 파일을 써준다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ tree .
+.
+├── localhost
+└── var.yaml
+
+<span style=color:#ae81ff>0</span> directories, <span style=color:#ae81ff>2</span> files
+
+❯ tail -n <span style=color:#ae81ff>10</span> *
+<span style=color:#f92672>==</span>&gt; localhost &lt;<span style=color:#f92672>==</span>
+<span style=color:#f92672>[</span>local<span style=color:#f92672>]</span>
+localhost
+
+<span style=color:#f92672>==</span>&gt; var.yaml &lt;<span style=color:#f92672>==</span>
+var:
+  a:
+    b:
+      c: string
+    d: <span style=color:#ae81ff>1</span>
+
+</code></pre></div><ul>
+<li><code>localhost</code>: Ansible ad-hoc 명령을 로컬에 하기 위한 호스트 INI 파일</li>
+<li><code>var.yaml</code>: <code>to_toml</code>의 입력으로 사용할 변수</li>
+</ul>
+<p>변수는 최소한의 검증하고 싶은 부분만 커버하도록 만들었다:</p>
+<ul>
+<li>중첩 키에 대해 동작하는지</li>
+<li>값 타입
+<ul>
+<li>정수(숫자)</li>
+<li>문자열</li>
+</ul>
+</li>
+</ul>
+<h2 id=필터-작성>필터 작성</h2>
+<p>Ansible이 파이썬 필터를 로드하는 기본 위치는 다음 명령에서 확인할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ansible-config list | grep filter_plugins -B7 -A3
+DEFAULT_FILTER_PLUGIN_PATH:
+  default: ~/.ansible/plugins/filter:/usr/share/ansible/plugins/filter
+  description: Colon separated paths in which Ansible will search <span style=color:#66d9ef>for</span> Jinja2 Filter
+    Plugins.
+  env:
+  - name: ANSIBLE_FILTER_PLUGINS
+  ini:
+  - key: filter_plugins
+    section: defaults
+  name: Jinja2 Filter Plugins Path
+  type: pathspec
+
+</code></pre></div><p>이 실습에선 default 경로에 파일을 만들지 않고 별도 경로에 만든 후 설정(<code>ANSIBLE_FILTER_PLUGINS</code>)하여 로드한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ mkdir filters
+</code></pre></div><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-python data-lang=python><span style=color:#75715e># filters/toml.py</span>
+<span style=color:#f92672>import</span> toml
+
+<span style=color:#66d9ef>def</span> <span style=color:#a6e22e>from_toml</span>(toml_string):
+    <span style=color:#66d9ef>return</span> toml<span style=color:#f92672>.</span>loads(toml_string)
+
+
+<span style=color:#66d9ef>def</span> <span style=color:#a6e22e>to_toml</span>(yaml_variable):
+    <span style=color:#66d9ef>return</span> toml<span style=color:#f92672>.</span>dumps(dict(yaml_variable))
+
+<span style=color:#66d9ef>class</span> <span style=color:#a6e22e>FilterModule</span>(object):
+
+    <span style=color:#66d9ef>def</span> <span style=color:#a6e22e>filters</span>(self):
+        <span style=color:#66d9ef>return</span> {
+            <span style=color:#e6db74>&#39;from_toml&#39;</span>: from_toml,
+            <span style=color:#e6db74>&#39;to_toml&#39;</span>: to_toml
+        }
+
+
+</code></pre></div><p>먼저 <code>FilterModule</code> 클래스를 선언한 것은 Ansible <a href=https://github1s.com/ansible/ansible/blob/devel/lib/ansible/plugins/filter/core.py#L560-L561>lib/ansible/plugins/filter/core.py</a>와 <a href=https://blog.oddbit.com/post/2019-04-25-writing-ansible-filter-plugins/>인터넷에서 찾아볼 수 있는 필터 플러그인 예제</a>를 참고했다(<a href=https://docs.ansible.com/ansible/latest/plugins/filter.html>문서</a>에서 상세히 설명하지 않는다). <code>filters()</code> 메소드가 overwrite 되지 않는 모양인데 이것이 파이썬 특징인지, Ansible 필터 플러그인의 구현이 그런지는 확인하지 않았다.</p>
+<p>새로 정의한 <code>from_toml</code>, <code>to_toml</code> 필터 동작은 <a href=https://github.com/uiri/toml#api-reference>파이썬 패키지 toml</a>에 의존한다. 엣지 케이스(?)에 대한 처리는 하지 않고 변수명에서 <code>from_toml</code> TOML 문자열 입력만 받을 것을, <code>to_toml</code>은 YAML 변수 입력만 받을 것을 암시한다. 정의한 메소드를 같은 이름의 키의 사전으로 <code>FilterModule.filters()</code>에서 반환한다.</p>
+<h2 id=to_toml>to_toml</h2>
+<p>Ad-hoc 명령으로 <code>to_toml</code> 테스트 해보면 문자열에 대해 잘 동작하지 않는다(<a href=/posts/ansible-pssh/#ansible>Ad-hoc 명령에 대한 참고</a>):</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ANSIBLE_FILTER_PLUGINS<span style=color:#f92672>=</span>filters ansible local -i localhost <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  -m debug <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  -a <span style=color:#e6db74>&#34;msg={{ var | to_toml }}&#34;</span> <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  -e <span style=color:#e6db74>&#34;@var.yaml&#34;</span>
+localhost | SUCCESS <span style=color:#f92672>=</span>&gt; <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;msg&#34;</span>: <span style=color:#e6db74>&#34;[a]\nd = 2\n\n[a.b]\nc = [ \&#34;s\&#34;, \&#34;t\&#34;, \&#34;r\&#34;, \&#34;i\&#34;, \&#34;n\&#34;, \&#34;g\&#34;,]\n&#34;</span>
+<span style=color:#f92672>}</span>
+
+~/tmp/toml on ☁️  <span style=color:#f92672>(</span>ap-northeast-2<span style=color:#f92672>)</span> on ☁️ flavono123@gmail.com
+❯ echo -e <span style=color:#e6db74>&#34;[a]\nd = 2\n\n[a.b]\nc = [ \&#34;s\&#34;, \&#34;t\&#34;, \&#34;r\&#34;, \&#34;i\&#34;, \&#34;n\&#34;, \&#34;g\&#34;,]\n&#34;</span>
+<span style=color:#f92672>[</span>a<span style=color:#f92672>]</span>
+d <span style=color:#f92672>=</span> <span style=color:#ae81ff>2</span>
+
+<span style=color:#f92672>[</span>a.b<span style=color:#f92672>]</span>
+c <span style=color:#f92672>=</span> <span style=color:#f92672>[</span> <span style=color:#e6db74>&#34;s&#34;</span>, <span style=color:#e6db74>&#34;t&#34;</span>, <span style=color:#e6db74>&#34;r&#34;</span>, <span style=color:#e6db74>&#34;i&#34;</span>, <span style=color:#e6db74>&#34;n&#34;</span>, <span style=color:#e6db74>&#34;g&#34;</span>,<span style=color:#f92672>]</span>
+</code></pre></div><p><a href=https://www.iops.tech/blog/generate-toml-using-ansible-template/>Ansible에서 YAML 문자열 객체를 <code>&lt;class 'ansible.parsing.YAML.objects.AnsibleUnicode'></code>로 다루어 일어나는 문제</a>라고 한다. 이 문제는 YAML 문자열을 홑 또는 쌍따옴표로 감싸도 발생한다. TOML은 문자열을 쌍따옴표(escaped) 또는 홑따옴표(literal)로 감싸는데 반해 YAML은 그러지 않아도 동작하니 파이썬에서 다루는 것이 다를 것이라 생각했다. 역시 이 문제에 대해 파이썬 코드 레벨까지 보진 않았다. 아무튼 <strong>Ansible YAML 문자열 객체를 별다른 처리하지 않으면 파이썬 TOML에선 각 문자를 원소로 하는 배열로 반환</strong>해버린다.</p>
+<p>이 문제를 해결하기 위해, 위 블로그 글에서 소개하는 트릭을 사용했다. YAML변수를 JSON 객체로 덤프하여 Ansible YAML 문자열 객체를 파이썬 문자열로 바꾼 후 다시 JSON -> TOML로 로드/덤프하는 것이다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-python data-lang=python><span style=color:#f92672>import</span> json
+
+<span style=color:#66d9ef>def</span> <span style=color:#a6e22e>to_toml</span>(yaml_variable):
+    j <span style=color:#f92672>=</span> json<span style=color:#f92672>.</span>dumps(dict(yaml_variable))
+    d <span style=color:#f92672>=</span> json<span style=color:#f92672>.</span>loads(j)
+    <span style=color:#66d9ef>return</span> toml<span style=color:#f92672>.</span>dumps(d)
+</code></pre></div><p>filters/toml.py를 수정 후 다시 테스트하면 문자열에 대해 잘 동작한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ANSIBLE_FILTER_PLUGINS<span style=color:#f92672>=</span>filters ansible local -i localhost <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  -m debug <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  -a <span style=color:#e6db74>&#34;msg={{ var | to_toml }}&#34;</span> <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  -e <span style=color:#e6db74>&#34;@var.yaml&#34;</span>
+localhost | SUCCESS <span style=color:#f92672>=</span>&gt; <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;msg&#34;</span>: <span style=color:#e6db74>&#34;[a]\nd = 2\n\n[a.b]\nc = \&#34;string\&#34;\n&#34;</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><h2 id=from_toml>from_toml</h2>
+<p>위 <code>to_toml</code> 테스트의 결과를 다시 입력 변수로 <code>from_toml</code>은 간단하게 테스트 할 수 있다. 변수 전체를 escaped한 쌍따옴표로 감싸는 것에 주의한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ANSIBLE_FILTER_PLUGINS<span style=color:#f92672>=</span>filters ansible local -i localhost <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  -m debug <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  -a <span style=color:#e6db74>&#34;msg={{ var | from_toml }}&#34;</span> <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  -e <span style=color:#e6db74>&#34;var=\&#34;[a]\nd = 2\n\n[a.b]\nc = \&#34;string\&#34;\n\&#34;&#34;</span>
+localhost | SUCCESS <span style=color:#f92672>=</span>&gt; <span style=color:#f92672>{</span>
+    <span style=color:#e6db74>&#34;msg&#34;</span>: <span style=color:#f92672>{</span>
+        <span style=color:#e6db74>&#34;a&#34;</span>: <span style=color:#f92672>{</span>
+            <span style=color:#e6db74>&#34;b&#34;</span>: <span style=color:#f92672>{</span>
+                <span style=color:#e6db74>&#34;c&#34;</span>: <span style=color:#e6db74>&#34;string&#34;</span>
+            <span style=color:#f92672>}</span>,
+            <span style=color:#e6db74>&#34;d&#34;</span>: <span style=color:#ae81ff>2</span>
+        <span style=color:#f92672>}</span>
+    <span style=color:#f92672>}</span>
+<span style=color:#f92672>}</span>
+
+</code></pre></div><h2 id=정리>정리</h2>
+<p>만든 필터는 <a href=https://github.com/containerd/containerd/blob/main/docs/man/containerd-config.toml.5.md>containerd의 설정</a>을 템플릿할 때 쓰게 될 것이다.</p>
+<p>필터 자체는 아주 간단하지만, Ansible 필터 플러그인을 만들기 위해 필요한 설정과 파일 형식을 알 수 있었다:</p>
+<ul>
+<li>필터 파일 설정 경로
+<ul>
+<li>환경변수: <code>ANSIBLE_FILTER_PLUGINS</code></li>
+<li>ansible.cfg(INI): <code>[defaults]</code> 섹션, <code>filter_plugins</code> 키</li>
+<li>기본 값: ~/.ansible/plugins/filter:/usr/share/ansible/plugins/filter</li>
+</ul>
+</li>
+<li>필터 파이썬 파일 포맷
+<ul>
+<li>필터로 동작할 메소드 정의</li>
+<li>필터 이름 키와 정의한 메소드 값 쌍의 사전을 <code>FilterModule.filters()</code>에서 반환</li>
+</ul>
+</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://www.iops.tech/blog/generate-toml-using-ansible-template/>https://www.iops.tech/blog/generate-toml-using-ansible-template/</a></li>
+<li><a href=https://toml.io/en/>https://toml.io/en/</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
