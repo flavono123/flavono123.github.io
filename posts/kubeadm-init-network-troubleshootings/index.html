@@ -1,0 +1,415 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>kubeadm으로 쿠버네티스 클러스터 설치와 문제 해결 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>kubeadm으로 쿠버네티스 클러스터 설치와 문제 해결</h2>
+<small class=date>Tue May 24, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/kubernetes class=tag>kubernetes</a>
+<a href=https://flavono123.github.io/tags/network class=tag>network</a>
+</div>
+</div>
+<div class=content><p>쿠버네티스 클러스터를 turn up하고 그 과정에서 생긴 문제점과 해결 과정을 정리한다.
+코드는 이 <a href=https://github.com/flavono123/kubernetes-the-hard-way>레포</a>에 있고 글을 쓰는 시점에 마지막 커밋은 <a href=https://github.com/flavono123/kubernetes-the-hard-way/commit/0188346>0188346</a>이다.</p>
+<p>노드엔 Vagrant, 클러스터 구성 도구는 kubeadm 그리고 CNI는 <a href=https://projectcalico.docs.tigera.io/about/about-calico>Calico</a>를 사용했다. Vagrant 컴퓨팅 리소스를 보면 알 수 있듯, 로컬에서 연습용으로 사용할 클러스터이다.</p>
+<p>provisioning 디렉토리 아래의 Ansible 코드 위주로 turnup 과정을 먼저 설명한다. 그리고 대부분 네트워크 문제였던 문제 해결 과정을 후술한다.</p>
+<h3 id=prerequisuite>Prerequisuite</h3>
+<p>클러스터는 총 3개 노드 모두 ubuntu 20.04이고, 각각 controlplane 1개와 worker2 개이다. CK* 시험 볼 때나(worker가 1개인 경우도 있다), 시험 준비하며 연습하던 기본적인 구성으로 했다.</p>
+<p>내부망(192.168.1.0/24)을 만들어 정적 IP를 할당하고 <a href=https://github.com/flavono123/kubernetes-the-hard-way/blob/main/provisioning/roles/dns/tasks/configure.yaml>DNS 등록</a>과 <a href=/posts/ansible-ssh-keygen/>SSH 연결</a>이 되도록 해주었다.</p>
+<h2 id=cluster-turn-up>Cluster turn-up</h2>
+<p>앞의 기본적인 프로비저닝을 제외하고, kubeadm로 쿠버네티스 클러스터 설치하는 것에 집중하여 설명한다. 또 CNI까지 설치해야 동작이 가능하므로 그것도 포함한다. 코드에선 Ansible <a href=https://github.com/flavono123/kubernetes-the-hard-way/tree/main/provisioning/roles/kubernetes>kubernetes role(provisioning/roles/kubernetes)</a>이다.</p>
+<p>기본적으론 <a href=https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/>쿠버네티스 문서 가이드</a>를 따라했고, <a href=https://wuestkamp.com/>CKS 강의하신 김선생님</a>의 <a href=https://raw.githubusercontent.com/killer-sh/cks-course-environment/master/cluster-setup/latest/install_master.sh>코드</a>도 참고했다.</p>
+<p>컨테이너 런타임인 containerd 설치는 <a href=http://localhost:1313/posts/containerd-as-kubernetes-cri/>이전 포스트</a>로 대체한다.</p>
+<p>kubelet이 잘 동작하기 위해 시스템의 swap을 비활성화해야 한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#75715e># tasks/swap.yaml</span>
+- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Disable swap</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>command</span>: <span style=color:#ae81ff>swapoff -a</span>
+
+- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Remove swapfile from /etc/fstab</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>mount</span>:
+    <span style=color:#f92672>state</span>: <span style=color:#ae81ff>absent</span>
+    <span style=color:#f92672>name</span>: <span style=color:#ae81ff>swap</span>
+    <span style=color:#f92672>fstype</span>: <span style=color:#ae81ff>swp</span>
+</code></pre></div><p>kubeadm으로 설치하기 위해 kubeadm, kubectl, kubelet 세개의 패키지를 받는다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#75715e># tasks/kube_install.yaml</span>
+- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Add Google Cloud GPG key</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>apt_key</span>:
+    <span style=color:#f92672>state</span>: <span style=color:#ae81ff>present</span>
+    <span style=color:#f92672>keyring</span>: <span style=color:#ae81ff>/usr/share/keyrings/kubernetes-archive-keyring.gpg</span>
+    <span style=color:#f92672>url</span>: <span style=color:#ae81ff>https://packages.cloud.google.com/apt/doc/apt-key.gpg</span>
+
+- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Add the Kubernetes APT repository</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>apt_repository</span>:
+    <span style=color:#f92672>state</span>: <span style=color:#ae81ff>present</span>
+    <span style=color:#f92672>update_cache</span>: <span style=color:#66d9ef>yes</span>
+    <span style=color:#f92672>filename</span>: <span style=color:#ae81ff>kubernetes.list</span>
+    <span style=color:#f92672>repo</span>: <span style=color:#e6db74>&#34;deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main&#34;</span>
+
+- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Install kubeadm, kubelet and kubectl</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>apt</span>:
+    <span style=color:#f92672>state</span>: <span style=color:#ae81ff>present</span>
+    <span style=color:#f92672>name</span>:
+    - <span style=color:#e6db74>&#34;kubeadm={{ kube_version }}-00&#34;</span>
+    - <span style=color:#e6db74>&#34;kubelet={{ kube_version }}-00&#34;</span>
+    - <span style=color:#e6db74>&#34;kubectl={{ kube_version }}-00&#34;</span>
+</code></pre></div><p>여기서 의아한 부분은 패키지 배포판 이름이 focal(20.04)가 아닌 <strong>xenial</strong>(16.04)라는 점이다. 이는 가이드 문서에도 그렇게 나와 있고, 실제로 <a href=https://packages.cloud.google.com/apt/dists>구글의 패키지 배포판 경로</a>를 보아도 그렇다. 히스토리까지 찾진 못했지만, 아마 xenial 이후의 버전은 다 호환이 되도록 하나에서 관리하는 것 같다(나는 focal로 바꾸어 레포를 등록하려다가 안됐었다).</p>
+<p>kubeadm으로 클러스터를 구성하는 것은:</p>
+<ul>
+<li>controlplane에서 옵션과 함께 초기화</li>
+<li>worker 노드를 join(controlplane에서 join 토큰 발급)</li>
+</ul>
+<p>순서로 진행된다. kubeadm.yaml 태스크는 크게 set/reset 블록으로 나누었다. Set 부분을 먼저 설명한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#75715e># tasks/kubeadm.yaml</span>
+- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Set kubeadm cluster</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>block</span>:
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Collect kuebadm init options</span>
+    <span style=color:#f92672>set_fact</span>:
+      <span style=color:#f92672>kubeadm_init_option</span>: <span style=color:#e6db74>&#34;--{{ item.key }}={{ item.value }}&#34;</span>
+    <span style=color:#f92672>with_items</span>: <span style=color:#e6db74>&#34;{{ kubeadm_init_options | dict2items }}&#34;</span>
+    <span style=color:#f92672>register</span>: <span style=color:#ae81ff>kubeadm_init_option_list</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Reduce kubeadm init options to a string</span>
+    <span style=color:#f92672>set_fact</span>:
+      <span style=color:#f92672>kubeadm_init_option_str</span>: <span style=color:#e6db74>&#34;{{ kubeadm_init_option_list.results | map(attribute=&#39;ansible_facts.kubeadm_init_option&#39;) | join(&#39; &#39;) }}&#34;</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Initialize kubeadm in controlplane</span>
+    <span style=color:#f92672>command</span>: <span style=color:#e6db74>&#34;kubeadm init {{ kubeadm_init_option_str }}&#34;</span>
+    <span style=color:#f92672>register</span>: <span style=color:#ae81ff>kubeadm_init_result</span>
+    <span style=color:#f92672>until</span>: <span style=color:#ae81ff>kubeadm_init_result.stdout.find(&#34;Your Kubernetes control-plane has initialized successfully!&#34;)</span>
+    <span style=color:#f92672>delay</span>: <span style=color:#ae81ff>120</span>
+    <span style=color:#f92672>retries</span>: <span style=color:#ae81ff>1</span>
+    <span style=color:#f92672>ignore_errors</span>: <span style=color:#e6db74>&#34;{{ ansible_check_mode }}&#34;</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Make directory for kube-config</span>
+    <span style=color:#f92672>file</span>:
+      <span style=color:#f92672>state</span>: <span style=color:#ae81ff>directory</span>
+      <span style=color:#f92672>path</span>: <span style=color:#ae81ff>$HOME/.kube</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Copy admin kube-config for root</span>
+    <span style=color:#f92672>command</span>: <span style=color:#ae81ff>cp /etc/kubernetes/admin.conf $HOME/.kube/config</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Create token for nodes</span>
+    <span style=color:#f92672>command</span>: <span style=color:#e6db74>&#34;kubeadm token create --print-join-command --ttl 0&#34;</span>
+    <span style=color:#f92672>register</span>: <span style=color:#ae81ff>join_command</span>
+    <span style=color:#f92672>delegate_to</span>: <span style=color:#e6db74>&#34;{{ groups.controlplane[0] }}&#34;</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;nodes&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Join nodes to the cluster</span>
+    <span style=color:#f92672>command</span>: <span style=color:#e6db74>&#34;{{ hostvars[inventory_hostname].join_command.stdout | trim }}&#34;</span>
+    <span style=color:#f92672>when</span>:
+    - <span style=color:#e6db74>&#34;&#39;nodes&#39; in group_names&#34;</span>
+    - <span style=color:#ae81ff>join_command.stdout != &#34;&#34;</span>
+  <span style=color:#f92672>when</span>:
+  - <span style=color:#ae81ff>kubeadm_reset is not defined</span>
+  <span style=color:#f92672>tags</span>:
+  - <span style=color:#ae81ff>kubernetes/kubeadm/set</span>
+</code></pre></div><p>실제 Ansible tasks엔 Ansible 변수를 kubeadm 명령 옵션으로 만들기 위해 문자열 조작하거나, 노드의 root 사용자가 쿠버네티스 어드민 자격으로 kubectl을 실행할 수 있게 설정을 복사하는 것(Copy admin kube-config for root)이 추가로 있다.</p>
+<p>controlplane에서 <code>kubeadm init</code> 시 옵션이 중요한데 그에 해당하는 변수인 <code>kubeadm_init_options</code>를 가져와 설명한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#75715e># defaults/main.yaml</span>
+<span style=color:#f92672>controlplane_node_hostname</span>: <span style=color:#e6db74>&#34;{{ groups[&#39;controlplane&#39;][0] }}&#34;</span>
+<span style=color:#f92672>controlplane_node_ip</span>: <span style=color:#e6db74>&#34;{{ hostvars[controlplane_node_hostname][&#39;ansible_facts&#39;][&#39;enp0s8&#39;][&#39;ipv4&#39;][&#39;address&#39;] }}&#34;</span>
+
+<span style=color:#f92672>kube_apiserver_port</span>: <span style=color:#ae81ff>6443</span>
+
+<span style=color:#f92672>kubeadm_init_options</span>:
+  <span style=color:#f92672>apiserver-advertise-address</span>: <span style=color:#e6db74>&#34;{{ controlplane_node_ip }}&#34;</span>
+  <span style=color:#f92672>control-plane-endpoint</span>: <span style=color:#e6db74>&#34;{{ controlplane_node_ip }}:{{ kube_apiserver_port }}&#34;</span>
+  <span style=color:#f92672>apiserver-cert-extra-sans</span>: <span style=color:#e6db74>&#34;{{ controlplane_node_ip }}&#34;</span>
+  <span style=color:#f92672>pod-network-cidr</span>: <span style=color:#ae81ff>172.16.0.0</span><span style=color:#ae81ff>/16</span>
+</code></pre></div><p><code>controlplane_node_ip</code>는 <a href=https://docs.ansible.com/ansible/latest/reference_appendices/special_variables.html>Ansible magic variables</a>를 이용해 얻어왔는데, 결국 192.168.1.2 즉, controlplane 노드의 내부망 IP이다.</p>
+<p><a href=https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/#initializing-your-control-plane-node>가이드의 kubeadm init 옵션 설명 부분</a>과 함께 보면,</p>
+<ul>
+<li><code>--control-plane-endpoint</code> - controlplane HA(multi-controlplane) 구성은 아니지만, 하나 있는 controlplane의 노드의 IP 주소를 적음</li>
+<li><code>--apiserver-cert-extra-sans</code> - Apiserver(=controlplane 노드)의 인증을 위한 SAN</li>
+<li><code>--pod-network-cidr</code> - 필수로 써주어야 CNI 애드온이 정상적으로 설치된다. <strong>노드(192.168.1.0/24)나 쿠버네티스 서비스(``&ndash;service-cidr` default 10.96.0.0/12) 네트워크와 겹치지 않도록 해주어야 한다.</strong> 서브넷의 크기도 중요한데 이는 후술한다.</li>
+<li><code>--apiserver-advertise-address</code> - 가이드엔 선택 사항으로 쓰여 있지만 이 설치에선 <strong>반드시 적어야 한다. Vagrant로 ubuntu VM을 만들면 호스트와 연결하기 위한 네트워크 인터페이스(enp0s3)가 있기 때문에, 구성한 내부망 IP를 지정해 주어야 한다</strong></li>
+</ul>
+<p>노드에서 네트워크 인터페이스를 확인해보면 기본으로 enp0s3와 클러스터 노드 라우팅을 위한 enp0s8(192.168.1.0/24)을 확인할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>root@cluster1-master1:~# ip a
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu <span style=color:#ae81ff>65536</span> qdisc noqueue state UNKNOWN group default qlen <span style=color:#ae81ff>1000</span>
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host
+       valid_lft forever preferred_lft forever
+2: enp0s3: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu <span style=color:#ae81ff>1500</span> qdisc fq_codel state UP group default qlen <span style=color:#ae81ff>1000</span>
+    link/ether 02:10:bc:02:65:4d brd ff:ff:ff:ff:ff:ff
+    inet 10.0.2.15/24 brd 10.0.2.255 scope global dynamic enp0s3
+       valid_lft 80280sec preferred_lft 80280sec
+    inet6 fe80::10:bcff:fe02:654d/64 scope link
+       valid_lft forever preferred_lft forever
+3: enp0s8: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu <span style=color:#ae81ff>1500</span> qdisc fq_codel state UP group default qlen <span style=color:#ae81ff>1000</span>
+    link/ether 08:00:27:5d:be:98 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.1.2/24 brd 192.168.1.255 scope global enp0s8
+       valid_lft forever preferred_lft forever
+    inet6 fe80::a00:27ff:fe5d:be98/64 scope link
+       valid_lft forever preferred_lft forever
+
+</code></pre></div><p>반복적으로 클러스터를 turn up 해보기 위해 reset하는 tasks도 만들었다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#75715e># tasks/kubeadm.yaml</span>
+- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Reset kubeadm cluster</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>block</span>:
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Drain nodes</span>
+    <span style=color:#f92672>command</span>: <span style=color:#e6db74>&#34;kubectl drain {{ item }} --delete-emptydir-data --force --ignore-daemonsets&#34;</span>
+    <span style=color:#f92672>with_items</span>: <span style=color:#e6db74>&#34;{{ groups.nodes }}&#34;</span>
+    <span style=color:#f92672>ignore_errors</span>: <span style=color:#66d9ef>yes</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Reset nodes</span>
+    <span style=color:#f92672>command</span>: <span style=color:#e6db74>&#34;kubeadm reset -f&#34;</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;nodes&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Reset iptables rules</span>
+    <span style=color:#f92672>shell</span>: <span style=color:#e6db74>&#34;iptables -F &amp;&amp; iptables -t nat -F &amp;&amp; iptables -t mangle -F &amp;&amp; iptables -X&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Delete nodes</span>
+    <span style=color:#f92672>command</span>: <span style=color:#e6db74>&#34;kubectl delete node {{ item }}&#34;</span>
+    <span style=color:#f92672>with_items</span>: <span style=color:#e6db74>&#34;{{ groups.nodes }}&#34;</span>
+    <span style=color:#f92672>ignore_errors</span>: <span style=color:#66d9ef>yes</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Reset controlplane</span>
+    <span style=color:#f92672>command</span>: <span style=color:#e6db74>&#34;kubeadm reset -f&#34;</span>
+    <span style=color:#f92672>when</span>:
+    - <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+  <span style=color:#f92672>when</span>:
+  - <span style=color:#ae81ff>kubeadm_reset is defined</span>
+  - <span style=color:#ae81ff>kubeadm_reset</span>
+  <span style=color:#f92672>tags</span>:
+  - <span style=color:#ae81ff>kubernetes/kubeadm/reset</span>
+</code></pre></div><p>Reset은 다음 순서로 진행된다:</p>
+<ul>
+<li>worker 노드 drain</li>
+<li>worker 노드 reset</li>
+<li>모든 노드의 iptables 초기화</li>
+<li>worker 노드 삭제(delete)</li>
+<li>controlplane 노드 reset</li>
+</ul>
+<p>처음엔 노드, Ansible 호스트, 의 상태에 따라 reset, set을 실행하고 싶었으나 적합하지 않은 것 같아 <code>kubeadm_reset</code>이란 플래그 변수와 태그로 reset/set tasks를 실행할지 분기했다. 이는 파드 네트워크 애드온인 Calico 설치할 때도 사용했다.</p>
+<p>여기까지 설치를 마치면 coredns 파드가 pending인 상태일 것이다. Calico를 설치해준다.</p>
+<p>여러 Calico 설치 방법 중에서 <a href=https://projectcalico.docs.tigera.io/getting-started/kubernetes/self-managed-onprem/onpremises>Self-managed on-premise</a>를 따라했다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#75715e># tasks/calico.yaml</span>
+- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Set the Calico CNI</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>block</span>:
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Create the directory for Calico</span>
+    <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+    <span style=color:#f92672>file</span>:
+      <span style=color:#f92672>state</span>: <span style=color:#ae81ff>directory</span>
+      <span style=color:#f92672>path</span>: <span style=color:#ae81ff>$HOME/calico</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Get the Calico operator definition</span>
+    <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+    <span style=color:#f92672>get_url</span>:
+      <span style=color:#f92672>url</span>: <span style=color:#ae81ff>https://projectcalico.docs.tigera.io/manifests/tigera-operator.yaml</span>
+      <span style=color:#f92672>dest</span>: <span style=color:#ae81ff>$HOME/calico/tigera-operator.yaml</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Get the Calico custom resource definition</span>
+    <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+    <span style=color:#f92672>uri</span>:
+      <span style=color:#f92672>url</span>: <span style=color:#ae81ff>https://projectcalico.docs.tigera.io/manifests/custom-resources.yaml</span>
+      <span style=color:#f92672>return_content</span>: <span style=color:#66d9ef>yes</span>
+    <span style=color:#f92672>register</span>: <span style=color:#ae81ff>calico_custom_resource_response</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Copy the Calico custom resource definition</span>
+    <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+    <span style=color:#f92672>copy</span>:
+      <span style=color:#f92672>content</span>: <span style=color:#e6db74>&#34;{{ calico_custom_resource_response.content | regex_replace(&#39;192\\.168\\.0\\.0\\/16&#39;, &#39;172.16.0.0/16&#39;) | to_yaml(indent=2, width=1337) | replace(&#39;\\n&#39;, &#39;\n&#39;) | replace(&#39;\&#34;&#39;, &#39;&#39;) }}&#34;</span>
+      <span style=color:#f92672>dest</span>: <span style=color:#ae81ff>$HOME/calico/custom-resources.yaml</span>
+    <span style=color:#f92672>ignore_errors</span>: <span style=color:#e6db74>&#34;{{ ansible_check_mode }}&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Create the Calico operaters and resoureces</span>
+    <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+    <span style=color:#f92672>command</span>: <span style=color:#e6db74>&#34;kubectl apply -f $HOME/calico/{{ item }}&#34;</span>
+    <span style=color:#f92672>with_items</span>:
+    - <span style=color:#ae81ff>tigera-operator.yaml</span>
+    - <span style=color:#ae81ff>custom-resources.yaml</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Get the calicoctl</span>
+    <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+    <span style=color:#f92672>get_url</span>:
+      <span style=color:#f92672>url</span>: <span style=color:#ae81ff>https://github.com/projectcalico/calico/releases/download/v3.23.1/calicoctl-linux-amd64</span>
+      <span style=color:#f92672>dest</span>: <span style=color:#ae81ff>/usr/local/bin/calicoctl</span>
+      <span style=color:#f92672>mode</span>: <span style=color:#e6db74>&#39;0755&#39;</span>
+  <span style=color:#f92672>tags</span>:
+  - <span style=color:#ae81ff>kubernetes/calico/set</span>
+  <span style=color:#f92672>when</span>:
+  - <span style=color:#e6db74>&#34;&#39;controlplane&#39; is in group_names&#34;</span>
+  - <span style=color:#ae81ff>calico_reset is not defined</span>
+</code></pre></div><p>가이드 설명대로:</p>
+<ul>
+<li>operator를 설치하고</li>
+<li>custom resources(Installation, APIServer)를 커스터마이즈한 후 설치한다
+<ul>
+<li>Installation의 <code>spec.calicoNetwork.ipPools[0].cidir</code>를 kubeadm init 시 <code>pod-network-cidr</code>와 같게 172.16.0.0/16으로 한다</li>
+</ul>
+</li>
+</ul>
+<p>추가로 Calico 제어를 위한 calicoctl도 설치한다. CNI가 잘 설치되었는지 확인하는 몇가지 명령을 실행해본다(설명과 공부는 다음으로 미룬다. DOIK라는 쿠버네티스 데이터베이스 오퍼레이터 스터디에서 명령을 알게 되었다):</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>root@cluster1-master1:~# calicoctl get ippool -owide
+NAME                  CIDR            NAT    IPIPMODE   VXLANMODE     DISABLED   DISABLEBGPEXPORT   SELECTOR
+default-ipv4-ippool   172.16.0.0/16   true   Never      CrossSubnet   false      false              all<span style=color:#f92672>()</span>
+
+root@cluster1-master1:~# calicoctl ipam show --show-blocks
++----------+------------------+-----------+------------+--------------+
+| GROUPING |       CIDR       | IPS TOTAL | IPS IN USE |   IPS FREE   |
++----------+------------------+-----------+------------+--------------+
+| IP Pool  | 172.16.0.0/16    |     <span style=color:#ae81ff>65536</span> | <span style=color:#ae81ff>8</span> <span style=color:#f92672>(</span>0%<span style=color:#f92672>)</span>     | <span style=color:#ae81ff>65528</span> <span style=color:#f92672>(</span>100%<span style=color:#f92672>)</span> |
+| Block    | 172.16.222.64/26 |        <span style=color:#ae81ff>64</span> | <span style=color:#ae81ff>4</span> <span style=color:#f92672>(</span>6%<span style=color:#f92672>)</span>     | <span style=color:#ae81ff>60</span> <span style=color:#f92672>(</span>94%<span style=color:#f92672>)</span>     |
+| Block    | 172.16.25.192/26 |        <span style=color:#ae81ff>64</span> | <span style=color:#ae81ff>2</span> <span style=color:#f92672>(</span>3%<span style=color:#f92672>)</span>     | <span style=color:#ae81ff>62</span> <span style=color:#f92672>(</span>97%<span style=color:#f92672>)</span>     |
+| Block    | 172.16.40.64/26  |        <span style=color:#ae81ff>64</span> | <span style=color:#ae81ff>2</span> <span style=color:#f92672>(</span>3%<span style=color:#f92672>)</span>     | <span style=color:#ae81ff>62</span> <span style=color:#f92672>(</span>97%<span style=color:#f92672>)</span>     |
++----------+------------------+-----------+------------+--------------+
+root@cluster1-master1:~# calicoctl node status
+Calico process is running.
+
+IPv4 BGP status
++--------------+-------------------+-------+----------+-------------+
+| PEER ADDRESS |     PEER TYPE     | STATE |  SINCE   |    INFO     |
++--------------+-------------------+-------+----------+-------------+
+| 192.168.1.4  | node-to-node mesh | up    | 09:20:29 | Established |
+| 192.168.1.3  | node-to-node mesh | up    | 09:20:33 | Established |
++--------------+-------------------+-------+----------+-------------+
+
+IPv6 BGP status
+No IPv6 peers found.
+
+</code></pre></div><p>worker 노드의 연결 상태나 파드용 서브넷 할당이 잘 된걸 볼 수 있다.</p>
+<p>Reset은 이미 설치되어 있단 가정하에 위 리소스들을 삭제해준다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#75715e># tasks/calico.yaml</span>
+- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Delete the Calico operators and resources</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>command</span>: <span style=color:#e6db74>&#34;kubectl delete -f $HOME/calico/{{ item }}&#34;</span>
+  <span style=color:#f92672>with_items</span>:
+  - <span style=color:#ae81ff>custom-resources.yaml</span>
+  - <span style=color:#ae81ff>tigera-operator.yaml</span>
+  <span style=color:#f92672>tags</span>:
+  - <span style=color:#ae81ff>kubernetes/calico/reset</span>
+  <span style=color:#f92672>when</span>:
+  - <span style=color:#e6db74>&#34;&#39;controlplane&#39; is in group_names&#34;</span>
+  - <span style=color:#ae81ff>calico_reset is defined</span>
+  - <span style=color:#ae81ff>calico_reset</span>
+</code></pre></div><p>이로써 쿠버네티스 구성은 끝났다. 추가로 <a href=https://github.com/flavono123/kubernetes-the-hard-way/blob/main/provisioning/roles/kubernetes/tasks/bash_kubectl.yaml>root 유저로 bash 사용을 쉽게 하기 위해 설정 몇개를 추가해줬다.</a></p>
+<h2 id=troubleshooting>Troubleshooting</h2>
+<p>실제로 위 설명처럼 클러스터 turn up을 한번에 뚝딱하진 못했다. 중간 중간 나사빠진 부분들이 있었는데, 그 때 마다 만난 오류와 해결방법을 설명한다.</p>
+<p><strong>client: unable to create k8s client: Get "https://10.96.0.1:443/api/v1/namespaces/kube-system": dial tcp 10.96.0.1:443: connect: connection refused" subsys=daemon</strong></p>
+<p>처음으로 애드온을 설치하고 나서, operator가 계속 재시작하여 보니 위와 같은 오류 로그가 있었다.</p>
+<p>원인은 크게 두가지였다.</p>
+<p>첫번째는 내부망 IP를 잘못 지정해서였다. 위에 쓴 IP와 달리 맨 처음엔 192.168.1.2, 192.168.1.3, 192.168.1.4가 아니라 <strong>192.168.1.1</strong>, 192.168.1.2, 192.168.1.3으로 했다. 첫번째 IP는 라우터가 사용하는 IP이기 때문에 잘 동작하지 않았던거 같다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#f92672>==</span>&gt; cluster1-master1: You assigned a static IP ending in <span style=color:#e6db74>&#34;.1&#34;</span> to this machine.
+<span style=color:#f92672>==</span>&gt; cluster1-master1: This is very often used by the router and can cause the
+<span style=color:#f92672>==</span>&gt; cluster1-master1: network to not work properly. If the network doesn<span style=color:#960050;background-color:#1e0010>&#39;</span>t work
+<span style=color:#f92672>==</span>&gt; cluster1-master1: properly, try changing this IP.
+</code></pre></div><p>하지만 192.168.1.1를 내가 라우터용 IP로 지정한 적이 없기 때문에, 확실히 이 IP를 라우터가 사용하는지 모르겠다. 또 VM에서 192.168.1.0/24의 라우터 IP를 직접 보지도 못했다. 학교에서 배웠던거 같은 지식과 몇몇 그렇게 사용하는 사례(<a href=https://docs.aws.amazon.com/vpc/latest/userguide/configure-subnets.html>AWS VPC</a>), 그리고 Vagrant가 띄워주는 경고 문구를 보고 유추했다. 조금 찜찜하지만 192.168.1.1가 아닌 IP를 사용하여 문제는 해결된다.</p>
+<p>두번째 이유는 kube-apiserver의 IP 주소가 잘못 되어서 그렇다. 앞서 말한듯 Vagrant로 시작한 VM은 호스트 머신에서 접속할 수 있도록 네트워크 인터페이스가 생긴다. 옵션이 없다면 kube-apiserver는 이 기본 인터페이스의 IP 주소를 다른 worker 노드에서 접근할 수 있도록 자신의 IP 주소로 사용하게 된다. 옵션 이름은 <code>advertise-address</code>이고 이는 kubeadm init 시 <code>apiserver-advertise-address</code>로 초기화 가능하다.</p>
+<p>즉, kubeadm init 시 <code>--apiserver-advertise-address=192.168.1.2</code>를 추가함으로 해결할 수 있었다. 잘 적용됐는지 확인은 kube-apiserver 매니페스토 파일과 생성된 kubernetes 서비스/엔드포인트로 확인할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>root@cluster1-master1:~# grep advertise -C3 /etc/kubernetes/manifests/kube-apiserver.yaml
+kind: Pod
+metadata:
+  annotations:
+    kubeadm.kubernetes.io/kube-apiserver.advertise-address.endpoint: 192.168.1.2:6443
+  creationTimestamp: null
+  labels:
+    component: kube-apiserver
+--
+  containers:
+  - command:
+    - kube-apiserver
+    - --advertise-address<span style=color:#f92672>=</span>192.168.1.2
+    - --allow-privileged<span style=color:#f92672>=</span>true
+    - --authorization-mode<span style=color:#f92672>=</span>Node,RBAC
+    - --client-ca-file<span style=color:#f92672>=</span>/etc/kubernetes/pki/ca.crt
+root@cluster1-master1:~# k get svc,ep
+NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT<span style=color:#f92672>(</span>S<span style=color:#f92672>)</span>   AGE
+service/kubernetes   ClusterIP   10.96.0.1    &lt;none&gt;        443/TCP   16h
+
+NAME                   ENDPOINTS          AGE
+endpoints/kubernetes   192.168.1.2:6443   16h
+</code></pre></div><p>또 worker 노드에서, 인증이 필요 없는 버전 경로로, kube-apiserver에 요청하여 연결이 잘 되는지 확인할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>root@cluster1-worker1:~# wget --no-check-certificate https://192.168.1.2:6443/version -O- -q
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;major&#34;</span>: <span style=color:#e6db74>&#34;1&#34;</span>,
+  <span style=color:#e6db74>&#34;minor&#34;</span>: <span style=color:#e6db74>&#34;23&#34;</span>,
+  <span style=color:#e6db74>&#34;gitVersion&#34;</span>: <span style=color:#e6db74>&#34;v1.23.6&#34;</span>,
+  <span style=color:#e6db74>&#34;gitCommit&#34;</span>: <span style=color:#e6db74>&#34;ad3338546da947756e8a88aa6822e9c11e7eac22&#34;</span>,
+  <span style=color:#e6db74>&#34;gitTreeState&#34;</span>: <span style=color:#e6db74>&#34;clean&#34;</span>,
+  <span style=color:#e6db74>&#34;buildDate&#34;</span>: <span style=color:#e6db74>&#34;2022-04-14T08:43:11Z&#34;</span>,
+  <span style=color:#e6db74>&#34;goVersion&#34;</span>: <span style=color:#e6db74>&#34;go1.17.9&#34;</span>,
+  <span style=color:#e6db74>&#34;compiler&#34;</span>: <span style=color:#e6db74>&#34;gc&#34;</span>,
+  <span style=color:#e6db74>&#34;platform&#34;</span>: <span style=color:#e6db74>&#34;linux/amd64&#34;</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><p><strong>client: unable to create k8s client: Get "https://10.96.0.1:443/api/v1/namespaces/kube-system": dial tcp 10.96.0.1:443: i/o timeout" subsys=daemon</strong></p>
+<p>문제를 해결하니 다른 문제가 생겼다. 여전히 operator는 kube-apiserver 연결이 실패하는데 이번엔 이유가 i/o timeout이다.</p>
+<p>이 문제는 해결과정이 좀 독특했다. 먼저 calico i/o timeout 로 구글링 하여 <a href=https://discuss.projectcalico.tigera.io/t/getting-the-dial-tcp-10-96-0-1-i-o-timeout-issues/38>이 스레드</a>를 발견했다. 답변에 파드 CIDR를 잘 설정해 해결했다는 것을 보고, &lsquo;난 파드 CIDR 지정한적이 없는데?&rsquo; 싶었다. 그렇다. kubeadm init 시 필수로 주어야 하는 옵션 <code>pod-network-cidr</code>를 쓰지 않았다.</p>
+<p>노드, 서비스 그리고 파드 각 네트워크 CIDR가 겹치지 않게 설정하라는 조언을 참고해서, <code>pod-network-cidr</code>를 처음엔 172.16.0.0/24로, 정말 겹치지 않게만, 설정했다. Calico custom resource Installation의 <code>spec.calicoNetwork.ipPools[0].blockSize|cidr</code>도 각각 24와 172.16.0.0/24로 맞추어 주었다.</p>
+<p>이럴 경우 모든 worker 노드에서 하나의 서브넷(172.16.0.0/24)를 공유하게 된다. <a href=https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/>kubelet엔 worker 노드에서 생성 할 수 있는 파드의 최대 개수를 110개로 hard restriction 하고 있다(max-pods 옵션)</a>. <a href="https://cloud.google.com/kubernetes-engine/docs/how-to/flexible-pod-cidr?hl=ko">GKE 문서엔, 이에 두배에 IP가 노드 당 할당할 수 있다</a>고 하여(아마 파드마다 서비스를 노출하는 경우를 생각한거 같다), 이 때 노드당 서브넷을 24 즉 256개 IP를 가용할 수 있게 설정한다.</p>
+<p>그런데 pod-network-cidr도 24의 서브넷으로 주었다. woker 노드마다 서브네팅 할 순 없을 것이다. 하지만 적은 개수의 파드 생성이나 통신하는데엔 문제가 없었다. 이는 Calico의 ippool 설정을 Cross-Subnet(default)으로 했기 때문에 그런것 같다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>root@cluster1-master1:~# calicoctl ipam show --show-blocks
++----------+---------------+-----------+------------+-----------+
+| GROUPING |     CIDR      | IPS TOTAL | IPS IN USE | IPS FREE  |
++----------+---------------+-----------+------------+-----------+
+| IP Pool  | 172.16.0.0/24 |       <span style=color:#ae81ff>256</span> | <span style=color:#ae81ff>8</span> <span style=color:#f92672>(</span>3%<span style=color:#f92672>)</span>     | <span style=color:#ae81ff>248</span> <span style=color:#f92672>(</span>97%<span style=color:#f92672>)</span> |
+| Block    | 172.16.0.0/24 |       <span style=color:#ae81ff>256</span> | <span style=color:#ae81ff>8</span> <span style=color:#f92672>(</span>3%<span style=color:#f92672>)</span>     | <span style=color:#ae81ff>248</span> <span style=color:#f92672>(</span>97%<span style=color:#f92672>)</span> |
++----------+---------------+-----------+------------+-----------+
+</code></pre></div><p>IPAM 블록이 하나로 되어 있다. 일반적인 설정이 아닌거 같고 나중에 문제가 있을 수도 있겠다 판단했다. 이 부분은 Calico를 더 스터디하며 알아 보아야겠다 생각하고 파드 cidr는 더 넉넉하게 16, 블록 cidr는 기본 값인 26으로 하여 블록이 노드 당 서브네팅 될 수 있도록 설정을 바꾸었다.</p>
+<h2 id=여담>여담</h2>
+<p>원랜 CNI를 Calico가 아닌 <a href=https://cilium.io/>Cilium</a>으로 진행하고 있었다. Cilium의 <a href=https://editor.cilium.io/>네트워크 정책 편집기</a>가 반짝반짝 이뻐 보여서 둘러보니, 네트워크 흐름 CLI 디버깅 툴이나 GUI인 <a href=https://github.com/cilium/hubble>Hubble</a>의 기능이 좋아 보여 이걸로 설치하기로 정했다. 반면에 Calico는 언뜻 봤을 때 홈페이지가 그닥 세련돼 보이지 않아(?) 선택하지 않았다. 그러다 위 문제 부분들에서 막혀 진행이 안 되고 있었다.</p>
+<p>그러다 Cilium 보단 Calico가 더 참고하기 좋은 리소스가 많다는 것을 알게 됐다(<a href=https://www.tigera.io/lp/calico-certification/>Certifications</a>, <a href=https://gasidaseo.notion.site/gasidaseo/CloudNet-Blog-c9dfa44a27ff431dafdd2edacc8a1863>블로그</a>). 결정적으론 위에 언급한 disquss 스레드가 문제를 해결하고 앞으로 나아가는데 도움이 되어 Calico를 선택하게 됐다.</p>
+<h2 id=정리>정리</h2>
+<p>클러스터 turn up 중 있던 문제와 해결 위주로 정리한다:</p>
+<ul>
+<li>kube*의 Apt(ubuntu) 패키지 저장소 배포판 이름은 xenial 이후엔 모두 <strong>xenial</strong>이다(focal, bionic은 없다)</li>
+<li>Vagrant에선 기본 네트워크 인터페이스가 이미 있으므로, 쿠버네티스 노드를 구성할 때 내부망 IP를 찾을 수 있도록 옵션을 주어야 한다
+<ul>
+<li>e.g. kub-apiserver의 <code>advertise-address</code>(kubeadm init 시 <code>apiserver-advertise-address</code>)</li>
+</ul>
+</li>
+<li>CNI operator는 kube-apiserver 즉, kubernetes 서비스와 통신 가능해야 한다.
+<ul>
+<li>노드 레벨에서 연결 가능한지 worker 노드에서 controlplane으로 직접 /version 요청을 해볼 것(TLS 인증 없이 가능)</li>
+</ul>
+</li>
+<li>kubeadm init 시 <strong><code>pod-network-cidr</code></strong> 는 꼭 지정해주어야 하며, 노드나 서비스 CIDR와 겹치지 않도록 해야 한다.</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/>https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/</a></li>
+<li><a href=https://raw.githubusercontent.com/killer-sh/cks-course-environment/master/cluster-setup/latest/install_master.sh>https://raw.githubusercontent.com/killer-sh/cks-course-environment/master/cluster-setup/latest/install_master.sh</a></li>
+<li><a href=https://projectcalico.docs.tigera.io/getting-started/kubernetes/self-managed-onprem/onpremises>https://projectcalico.docs.tigera.io/getting-started/kubernetes/self-managed-onprem/onpremises</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
