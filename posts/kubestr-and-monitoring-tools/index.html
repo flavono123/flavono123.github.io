@@ -1,0 +1,437 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Kubestr | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>Kubestr</h2>
+<small class=date>Mon May 30, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/kubernetes class=tag>kubernetes</a>
+<a href=https://flavono123.github.io/tags/linux class=tag>linux</a>
+</div>
+</div>
+<div class=content><p><a href=https://kubestr.io/>kubestr</a>라는 쿠버네티스 저장소 IO 벤치마크 도구로 저장소 성능을 측정해본다. <a href=/posts/statefulset-vs-deployment/>지난 글</a>에서 만든 local-path-provisioner와 <a href=https://artifacthub.io/packages/helm/nfs-subdir-external-provisioner/nfs-subdir-external-provisioner>nfs-subdir-external-provisioner</a>를 새로 설치해 둘을 비교한다. 로컬 VM에서 하는 것이기 때문에 실제 성능 측정보단 벤치마크 자체를 연습해본다. 또 벤치마킹하는 동안 컴퓨팅 자원 지표를 측정할 수 있는 모니터 도구 sar를 사용해본다.</p>
+<h2 id=nfs>NFS</h2>
+<p>nfs-subdir-external-provisioner를 설치하기 위해 노드에 NFS를 마운트한다. 별도 NFS 노드를 준비하지 않고 controlplane에 마운트한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml>---
+<span style=color:#75715e># variables</span>
+<span style=color:#f92672>nfs_mount_path</span>: <span style=color:#ae81ff>/nfs-storage</span>
+<span style=color:#f92672>nfs_network_cidr</span>: <span style=color:#ae81ff>192.168.1.0</span><span style=color:#ae81ff>/24</span>
+---
+<span style=color:#75715e># tasks</span>
+- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Turn up NFS in controlplane</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>block</span>:
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Install nfs-kernel-server</span>
+    <span style=color:#f92672>apt</span>:
+      <span style=color:#f92672>state</span>: <span style=color:#ae81ff>present</span>
+      <span style=color:#f92672>update_cache</span>: <span style=color:#66d9ef>yes</span>
+      <span style=color:#f92672>name</span>:
+      - <span style=color:#ae81ff>nfs-kernel-server</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Create NFS mount path</span>
+    <span style=color:#f92672>file</span>:
+      <span style=color:#f92672>state</span>: <span style=color:#ae81ff>directory</span>
+      <span style=color:#f92672>owner</span>: <span style=color:#ae81ff>nobody</span>
+      <span style=color:#f92672>group</span>: <span style=color:#ae81ff>nogroup</span>
+      <span style=color:#f92672>mode</span>: <span style=color:#e6db74>&#34;0777&#34;</span>
+      <span style=color:#f92672>path</span>: <span style=color:#e6db74>&#34;{{ nfs_mount_path }}&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Add exports table to /etc/exports</span>
+    <span style=color:#f92672>blockinfile</span>:
+      <span style=color:#f92672>path</span>: <span style=color:#ae81ff>/etc/exports</span>
+      <span style=color:#f92672>block</span>: |<span style=color:#e6db74>
+</span><span style=color:#e6db74>        </span>        {{ <span style=color:#ae81ff>nfs_mount_path }}  {{ nfs_network_cidr }}(rw,sync,no_subtree_check)</span>
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Export /etc/exports</span>
+    <span style=color:#f92672>command</span>: <span style=color:#ae81ff>exportfs -a</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Restart nfs-kernel-server service</span>
+    <span style=color:#f92672>command</span>: <span style=color:#ae81ff>systemctl restart nfs-kernel-server</span>
+
+  <span style=color:#f92672>when</span>:
+  - <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+
+- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Install nfs-client</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>apt</span>:
+    <span style=color:#f92672>state</span>: <span style=color:#ae81ff>present</span>
+    <span style=color:#f92672>update_cache</span>: <span style=color:#66d9ef>yes</span>
+    <span style=color:#f92672>name</span>:
+    - <span style=color:#ae81ff>nfs-common</span>
+</code></pre></div><p>controlplane엔:</p>
+<ul>
+<li>nfs-kernel-server를 설치한다.</li>
+<li>마운트 경로를 만든다.
+<ul>
+<li>누구나(nobody:nogroup) 접근할 수 있는 권한(777)이어야 한다</li>
+</ul>
+</li>
+<li>마운트 경로와 접근 가능한 네트워크를 노출(exports)한다.
+<ul>
+<li>sync: (읽기, 쓰기) <a href=https://linux.die.net/man/5/exports>요청에 대해 커밋한 저장소에 대해 실행</a></li>
+<li>no_subtree_check: 예시처럼 디스크 전체가 아닌 서브디렉토리를 마운트하는 경우 <a href=http://nfs.sourceforge.net/#section_c>체크를 해제(=no_subtree_check)해야 문제가 거의 없다고 한다</a></li>
+</ul>
+</li>
+</ul>
+<p>모든 노드에 NFS 클라이언트 사용을 위해 nfs-common을 설치한다(controlplane은 nfs-kernel-server 설치 시 의존성으로 이미 설치됐다).</p>
+<p>NFS 자체를 테스트하는 대신 nfs 저장소 프로비저너를 통해 검증한다.</p>
+<h2 id=nfs-subdir-external-provisioner>nfs-subdir-external-provisioner</h2>
+<p>nfs-subdir-external-provisioner는 helm에 공개되어 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner
+</code></pre></div><p>설치 시 아래 values.yaml 파일을 넘겨 프로비저너(디플로이먼트의 파드)의 명세를 바꾼다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#f92672>nfs</span>:
+  <span style=color:#f92672>path</span>: <span style=color:#ae81ff>/nfs-storage</span>
+  <span style=color:#f92672>server</span>: <span style=color:#ae81ff>192.168.1.2</span>
+<span style=color:#f92672>nodeSelector</span>:
+  <span style=color:#f92672>kubernetes.io/hostname</span>: <span style=color:#ae81ff>cluster1-master1</span>
+<span style=color:#f92672>tolerations</span>:
+- <span style=color:#f92672>effect</span>: <span style=color:#ae81ff>NoSchedule</span>
+  <span style=color:#f92672>key</span>: <span style=color:#ae81ff>node-role.kubernetes.io/master</span>
+  <span style=color:#f92672>operator</span>: <span style=color:#ae81ff>Exists</span>
+</code></pre></div><ul>
+<li>NFS 루트 경로와 마운트한 노드(controlplane)의 IP 주소 전달</li>
+<li>파드가 controlplane에서 실행될 수 있도록 NodeSelect와 Toleration 추가</li>
+</ul>
+<p>values 적용이 됐는지 잘 확인하고 설치한다. 릴리즈와 같은 이름의 네임스페이스를 만들어 그곳에 설치했다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k create ns nfs-provisioner
+$ helm install nfs-provisioner -n nfs-provisioner nfs-subdir-external-provisioner/nfs-subdir-external-provisioner --values values.yaml --dry-run | yq ea <span style=color:#e6db74>&#39;split_doc | [.][] | select(.kind==&#34;Deployment&#34;)&#39;</span>
+<span style=color:#75715e># Source: nfs-subdir-external-provisioner/templates/deployment.yaml</span>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-provisioner-nfs-subdir-external-provisioner
+  labels:
+    chart: nfs-subdir-external-provisioner-4.0.16
+    heritage: Helm
+    app: nfs-subdir-external-provisioner
+    release: nfs-provisioner
+spec:
+  replicas: <span style=color:#ae81ff>1</span>
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nfs-subdir-external-provisioner
+      release: nfs-provisioner
+  template:
+    metadata:
+      annotations:
+      labels:
+        app: nfs-subdir-external-provisioner
+        release: nfs-provisioner
+    spec:
+      serviceAccountName: nfs-provisioner-nfs-subdir-external-provisioner
+      securityContext: <span style=color:#f92672>{}</span>
+      nodeSelector:
+        kubernetes.io/hostname: cluster1-master1
+      containers:
+        - name: nfs-subdir-external-provisioner
+          image: <span style=color:#e6db74>&#34;k8s.gcr.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2&#34;</span>
+          imagePullPolicy: IfNotPresent
+          securityContext: <span style=color:#f92672>{}</span>
+          volumeMounts:
+            - name: nfs-subdir-external-provisioner-root
+              mountPath: /persistentvolumes
+          env:
+            - name: PROVISIONER_NAME
+              value: cluster.local/nfs-provisioner-nfs-subdir-external-provisioner
+            - name: NFS_SERVER
+              value: 192.168.1.2
+            - name: NFS_PATH
+              value: /nfs-storage
+      volumes:
+        - name: nfs-subdir-external-provisioner-root
+          nfs:
+            server: 192.168.1.2
+            path: /nfs-storage
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+          operator: Exists
+
+$ helm install nfs-provisioner -n nfs-provisioner nfs-subdir-external-provisioner/nfs-subdir-external-provisioner --values values.yaml
+NAME: nfs-provisioner
+LAST DEPLOYED: Tue May <span style=color:#ae81ff>31</span> 06:51:23 <span style=color:#ae81ff>2022</span>
+NAMESPACE: nfs-provisioner
+STATUS: deployed
+REVISION: <span style=color:#ae81ff>1</span>
+TEST SUITE: None
+
+</code></pre></div><p>저장소 클래스 nfs-client 생성과 프로비저너 실행 중을 확인한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k get sc nfs-client
+NAME         PROVISIONER                                                     RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+nfs-client   cluster.local/nfs-provisioner-nfs-subdir-external-provisioner   Delete          Immediate           true                   106s
+$ k get all -n nfs-provisioner
+NAME                                                                  READY   STATUS    RESTARTS   AGE
+pod/nfs-provisioner-nfs-subdir-external-provisioner-6b56f65d85qdvp2   1/1     Running   <span style=color:#ae81ff>0</span>          107s
+
+NAME                                                              READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/nfs-provisioner-nfs-subdir-external-provisioner   1/1     <span style=color:#ae81ff>1</span>            <span style=color:#ae81ff>1</span>           108s
+
+NAME                                                                         DESIRED   CURRENT   READY   AGE
+replicaset.apps/nfs-provisioner-nfs-subdir-external-provisioner-6b56f65d85   <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>       107s
+</code></pre></div><p>간단한 프로비저너 동작 검증을 위해 다음 PVC와 파드를 생성한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#75715e># NFS PVC</span>
+<span style=color:#f92672>apiVersion</span>: <span style=color:#ae81ff>v1</span>
+<span style=color:#f92672>kind</span>: <span style=color:#ae81ff>PersistentVolumeClaim</span>
+<span style=color:#f92672>metadata</span>:
+  <span style=color:#f92672>name</span>: <span style=color:#ae81ff>nfs-pvc</span>
+  <span style=color:#f92672>namespace</span>: <span style=color:#ae81ff>default</span>
+<span style=color:#f92672>spec</span>:
+  <span style=color:#f92672>accessModes</span>:
+  - <span style=color:#ae81ff>ReadWriteOnce</span>
+  <span style=color:#f92672>storageClassName</span>: <span style=color:#ae81ff>nfs-client</span>
+  <span style=color:#f92672>resources</span>:
+    <span style=color:#f92672>requests</span>:
+      <span style=color:#f92672>storage</span>: <span style=color:#ae81ff>1Gi</span>
+<span style=color:#75715e># Pod</span>
+<span style=color:#f92672>apiVersion</span>: <span style=color:#ae81ff>v1</span>
+<span style=color:#f92672>kind</span>: <span style=color:#ae81ff>Pod</span>
+<span style=color:#f92672>metadata</span>:
+  <span style=color:#f92672>creationTimestamp</span>: <span style=color:#66d9ef>null</span>
+  <span style=color:#f92672>labels</span>:
+    <span style=color:#f92672>run</span>: <span style=color:#ae81ff>test</span>
+  <span style=color:#f92672>name</span>: <span style=color:#ae81ff>test</span>
+<span style=color:#f92672>spec</span>:
+  <span style=color:#f92672>containers</span>:
+  - <span style=color:#f92672>args</span>:
+    - <span style=color:#ae81ff>sh</span>
+    - -<span style=color:#ae81ff>c</span>
+    - <span style=color:#ae81ff>echo Test2 &gt;&gt; /logs/log</span>
+    <span style=color:#f92672>image</span>: <span style=color:#ae81ff>busybox</span>
+    <span style=color:#f92672>name</span>: <span style=color:#ae81ff>test</span>
+    <span style=color:#f92672>resources</span>: {}
+    <span style=color:#f92672>volumeMounts</span>:
+    - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>nfs-pvc</span>
+      <span style=color:#f92672>mountPath</span>: <span style=color:#ae81ff>/logs</span>
+  <span style=color:#f92672>volumes</span>:
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>nfs-pvc</span>
+    <span style=color:#f92672>persistentVolumeClaim</span>:
+      <span style=color:#f92672>claimName</span>: <span style=color:#ae81ff>nfs-pvc</span>
+  <span style=color:#f92672>dnsPolicy</span>: <span style=color:#ae81ff>ClusterFirst</span>
+  <span style=color:#f92672>restartPolicy</span>: <span style=color:#ae81ff>Never</span>
+<span style=color:#f92672>status</span>: {}
+</code></pre></div><p>파드 실행 후 NFS 마운트 지점에 로그가 쓰인 것을 확인한다. 파드는 워커 노드에서 실행됐지만 controlplane에 로그가 쓰였다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k get po -owide
+NAME   READY   STATUS      RESTARTS   AGE   IP             NODE               NOMINATED NODE   READINESS GATES
+test   0/1     Completed   <span style=color:#ae81ff>0</span>          15s   172.16.40.76   cluster1-worker1   &lt;none&gt;           &lt;none&gt;
+
+$ cat /nfs-storage/default-nfs-pvc-pvc-b7c2e64c-4296-4f6f-816f-84a83b599490/log
+Test
+</code></pre></div><h2 id=kubestr>Kubestr</h2>
+<p>kubestr의 기능 중 <a href=https://github.com/axboe/fio>fio</a>라는 I/O 벤치마크 도구를 이용해 저장소 클래스의 I/O 성능을 측정한다.</p>
+<p>먼저 kubestr를 설치한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ wget -qO- https://github.com/kastenhq/kubestr/releases/download/v0.4.31/kubestr_0.4.31_Linux_amd64.tar.gz | tar xvfz -
+$ mv kubestr /usr/local/bin/
+$ chmod +x /usr/local/bin/kubestr
+</code></pre></div><p>서브 명령 fio에 대한 도움말을 보면:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ kubestr fio -h
+Run an fio test
+
+Usage:
+  kubestr fio <span style=color:#f92672>[</span>flags<span style=color:#f92672>]</span>
+
+Flags:
+  -f, --fiofile string        The path to a an fio config file.
+  -h, --help                  help <span style=color:#66d9ef>for</span> fio
+  -i, --image string          The container image used to create a pod.
+  -n, --namespace string      The namespace used to run FIO. <span style=color:#f92672>(</span>default <span style=color:#e6db74>&#34;default&#34;</span><span style=color:#f92672>)</span>
+  -z, --size string           The size of the volume used to run FIO. Note that the FIO job definition is not scaled accordingly. <span style=color:#f92672>(</span>default <span style=color:#e6db74>&#34;100Gi&#34;</span><span style=color:#f92672>)</span>
+  -s, --storageclass string   The name of a Storageclass. <span style=color:#f92672>(</span>Required<span style=color:#f92672>)</span>
+  -t, --testname string       The Name of a predefined kubestr fio test. Options<span style=color:#f92672>(</span>default-fio<span style=color:#f92672>)</span>
+
+Global Flags:
+  -e, --outfile string   The file where test results will be written
+  -o, --output string    Options<span style=color:#f92672>(</span>json<span style=color:#f92672>)</span>
+</code></pre></div><p>-s 옵션으로 저장소 클래스를 줄 수 있다. 기본 테스트하는 PV 크기가 100Gi로 지금 연습하는 상황에선 적합하지 않으니 줄여준다. 어떤 테스트를 한 것인지를 결과를 보고 이해하자:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ kubestr fio -s local-path --size 4G
+PVC created kubestr-fio-pvc-wjwt2
+Pod created kubestr-fio-pod-nvvmj
+Running FIO test <span style=color:#f92672>(</span>default-fio<span style=color:#f92672>)</span> on StorageClass <span style=color:#f92672>(</span>local-path<span style=color:#f92672>)</span> with a PVC of Size <span style=color:#f92672>(</span>4G<span style=color:#f92672>)</span>
+Elapsed time- 30.590197824s
+FIO test results:
+
+FIO version - fio-3.20
+Global options - ioengine<span style=color:#f92672>=</span>libaio verify<span style=color:#f92672>=</span><span style=color:#ae81ff>0</span> direct<span style=color:#f92672>=</span><span style=color:#ae81ff>1</span> gtod_reduce<span style=color:#f92672>=</span><span style=color:#ae81ff>1</span>
+
+JobName: read_iops
+  blocksize<span style=color:#f92672>=</span>4K filesize<span style=color:#f92672>=</span>2G iodepth<span style=color:#f92672>=</span><span style=color:#ae81ff>64</span> rw<span style=color:#f92672>=</span>randread
+read:
+  IOPS<span style=color:#f92672>=</span>1068.180298 BW<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)=</span><span style=color:#ae81ff>4289</span>
+  iops: min<span style=color:#f92672>=</span><span style=color:#ae81ff>758</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>1422</span> avg<span style=color:#f92672>=</span>1074.133301
+  bw<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)</span>: min<span style=color:#f92672>=</span><span style=color:#ae81ff>3033</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>5688</span> avg<span style=color:#f92672>=</span>4297.033203
+
+JobName: write_iops
+  blocksize<span style=color:#f92672>=</span>4K filesize<span style=color:#f92672>=</span>2G iodepth<span style=color:#f92672>=</span><span style=color:#ae81ff>64</span> rw<span style=color:#f92672>=</span>randwrite
+write:
+  IOPS<span style=color:#f92672>=</span>647.105408 BW<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)=</span><span style=color:#ae81ff>2605</span>
+  iops: min<span style=color:#f92672>=</span><span style=color:#ae81ff>304</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>808</span> avg<span style=color:#f92672>=</span>653.133362
+  bw<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)</span>: min<span style=color:#f92672>=</span><span style=color:#ae81ff>1216</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>3232</span> avg<span style=color:#f92672>=</span>2612.933350
+
+JobName: read_bw
+  blocksize<span style=color:#f92672>=</span>128K filesize<span style=color:#f92672>=</span>2G iodepth<span style=color:#f92672>=</span><span style=color:#ae81ff>64</span> rw<span style=color:#f92672>=</span>randread
+read:
+  IOPS<span style=color:#f92672>=</span>1117.911987 BW<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)=</span><span style=color:#ae81ff>143626</span>
+  iops: min<span style=color:#f92672>=</span><span style=color:#ae81ff>764</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>1500</span> avg<span style=color:#f92672>=</span>1124.699951
+  bw<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)</span>: min<span style=color:#f92672>=</span><span style=color:#ae81ff>97792</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>192000</span> avg<span style=color:#f92672>=</span>143969.593750
+
+JobName: write_bw
+  blocksize<span style=color:#f92672>=</span>128k filesize<span style=color:#f92672>=</span>2G iodepth<span style=color:#f92672>=</span><span style=color:#ae81ff>64</span> rw<span style=color:#f92672>=</span>randwrite
+write:
+  IOPS<span style=color:#f92672>=</span>445.627716 BW<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)=</span><span style=color:#ae81ff>57573</span>
+  iops: min<span style=color:#f92672>=</span><span style=color:#ae81ff>336</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>544</span> avg<span style=color:#f92672>=</span>448.766663
+  bw<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)</span>: min<span style=color:#f92672>=</span><span style=color:#ae81ff>43008</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>69748</span> avg<span style=color:#f92672>=</span>57449.035156
+
+Disk stats <span style=color:#f92672>(</span>read/write<span style=color:#f92672>)</span>:
+  sda: ios<span style=color:#f92672>=</span>38257/18409 merge<span style=color:#f92672>=</span>336/382 ticks<span style=color:#f92672>=</span>2136400/2041390 in_queue<span style=color:#f92672>=</span>4064392, util<span style=color:#f92672>=</span>99.882767%                                     -  OK
+</code></pre></div><p>총 네개의 테스트 job을 볼 수 있다. 각각 읽기 IOPS, 쓰기 IOPS, 읽기 Bandwidth, 쓰기 Bandwidth를 측정한 테스트 job이다.
+IOPS와 Bandwidth 테스트는 블록 사이즈가 다르다(4K/128k). VM 위에서 하는 모의테스트이기도 하지만, 성능이 좋다 나쁘다를 판단하긴 어렵다..</p>
+<p>local-path 보단 성능이 떨어질 것으로 예상되는 nfs-client에 대해서도 실행해본다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>kubestr fio -s nfs-client --size 4G
+PVC created kubestr-fio-pvc-jsvtv
+Pod created kubestr-fio-pod-vt2bw
+Running FIO test <span style=color:#f92672>(</span>default-fio<span style=color:#f92672>)</span> on StorageClass <span style=color:#f92672>(</span>nfs-client<span style=color:#f92672>)</span> with a PVC of Size <span style=color:#f92672>(</span>4G<span style=color:#f92672>)</span>
+Elapsed time- 1m42.829777425s
+FIO test results:
+
+FIO version - fio-3.20
+Global options - ioengine<span style=color:#f92672>=</span>libaio verify<span style=color:#f92672>=</span><span style=color:#ae81ff>0</span> direct<span style=color:#f92672>=</span><span style=color:#ae81ff>1</span> gtod_reduce<span style=color:#f92672>=</span><span style=color:#ae81ff>1</span>
+
+JobName: read_iops
+  blocksize<span style=color:#f92672>=</span>4K filesize<span style=color:#f92672>=</span>2G iodepth<span style=color:#f92672>=</span><span style=color:#ae81ff>64</span> rw<span style=color:#f92672>=</span>randread
+read:
+  IOPS<span style=color:#f92672>=</span>155.228043 BW<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)=</span><span style=color:#ae81ff>636</span>
+  iops: min<span style=color:#f92672>=</span><span style=color:#ae81ff>109</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>190</span> avg<span style=color:#f92672>=</span>157.903229
+  bw<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)</span>: min<span style=color:#f92672>=</span><span style=color:#ae81ff>439</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>760</span> avg<span style=color:#f92672>=</span>632.419373
+
+JobName: write_iops
+  blocksize<span style=color:#f92672>=</span>4K filesize<span style=color:#f92672>=</span>2G iodepth<span style=color:#f92672>=</span><span style=color:#ae81ff>64</span> rw<span style=color:#f92672>=</span>randwrite
+write:
+  IOPS<span style=color:#f92672>=</span>153.714279 BW<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)=</span><span style=color:#ae81ff>630</span>
+  iops: min<span style=color:#f92672>=</span><span style=color:#ae81ff>45</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>196</span> avg<span style=color:#f92672>=</span>155.774200
+  bw<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)</span>: min<span style=color:#f92672>=</span><span style=color:#ae81ff>183</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>784</span> avg<span style=color:#f92672>=</span>623.903198
+
+JobName: read_bw
+  blocksize<span style=color:#f92672>=</span>128K filesize<span style=color:#f92672>=</span>2G iodepth<span style=color:#f92672>=</span><span style=color:#ae81ff>64</span> rw<span style=color:#f92672>=</span>randread
+read:
+  IOPS<span style=color:#f92672>=</span>153.777771 BW<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)=</span><span style=color:#ae81ff>20195</span>
+  iops: min<span style=color:#f92672>=</span><span style=color:#ae81ff>49</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>192</span> avg<span style=color:#f92672>=</span>155.806458
+  bw<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)</span>: min<span style=color:#f92672>=</span><span style=color:#ae81ff>6387</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>24576</span> avg<span style=color:#f92672>=</span>19979.226562
+
+JobName: write_bw
+  blocksize<span style=color:#f92672>=</span>128k filesize<span style=color:#f92672>=</span>2G iodepth<span style=color:#f92672>=</span><span style=color:#ae81ff>64</span> rw<span style=color:#f92672>=</span>randwrite
+write:
+  IOPS<span style=color:#f92672>=</span>154.718903 BW<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)=</span><span style=color:#ae81ff>20315</span>
+  iops: min<span style=color:#f92672>=</span><span style=color:#ae81ff>86</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>193</span> avg<span style=color:#f92672>=</span>157.000000
+  bw<span style=color:#f92672>(</span>KiB/s<span style=color:#f92672>)</span>: min<span style=color:#f92672>=</span><span style=color:#ae81ff>11008</span> max<span style=color:#f92672>=</span><span style=color:#ae81ff>24782</span> avg<span style=color:#f92672>=</span>20132.097656
+
+Disk stats <span style=color:#f92672>(</span>read/write<span style=color:#f92672>)</span>:
+  -  OK
+</code></pre></div><p>nfs-client는 IOPS나 BW 읽기 쓰기 모두 local-path 대비 현저하게 느리다.</p>
+<h2 id=sar>sar</h2>
+<p>병목 부분 확인을 위해 <a href=https://linux.die.net/man/1/sar>sar</a>로 장치 메트릭을 수집한다. 우분투에서 sar는 sysstat 패키지를 받으면 설치된다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ sar --dev<span style=color:#f92672>=</span>dev8-0 -d <span style=color:#ae81ff>5</span>
+</code></pre></div><p>위 명령을 대상이 되는 노드에서 실행한다. 즉 local-path 테스트라면 파드가 실행 중인 워커 노드(kubestr fio 테스트 시 파드 위치를 모니터 하자; <code>k get po -owide -w</code>), nfs-client라면 controlplane 노드에서 실행한다. dev는 장치 이름인데 lsblk하면 볼 수 있는 장치의 major, minor 숫자로 sar에서 장치 이름을 이처럼 매칭해 놓은 것 같다. -d는 메트릭 출력 간격을 나타낸다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ lsblk
+NAME   MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT
+loop0    7:0    <span style=color:#ae81ff>0</span> 67.8M  <span style=color:#ae81ff>1</span> loop /snap/lxd/22753
+loop1    7:1    <span style=color:#ae81ff>0</span> 61.9M  <span style=color:#ae81ff>1</span> loop /snap/core20/1434
+loop2    7:2    <span style=color:#ae81ff>0</span> 44.7M  <span style=color:#ae81ff>1</span> loop /snap/snapd/15534
+loop3    7:3    <span style=color:#ae81ff>0</span> 55.5M  <span style=color:#ae81ff>1</span> loop /snap/core18/2409
+loop4    7:4    <span style=color:#ae81ff>0</span>  4.7M  <span style=color:#ae81ff>1</span> loop /snap/yq/1702
+loop5    7:5    <span style=color:#ae81ff>0</span> 44.7M  <span style=color:#ae81ff>1</span> loop /snap/snapd/15904
+loop6    7:6    <span style=color:#ae81ff>0</span> 61.9M  <span style=color:#ae81ff>1</span> loop /snap/core20/1494
+sda      8:0    <span style=color:#ae81ff>0</span>   40G  <span style=color:#ae81ff>0</span> disk
+└─sda1   8:1    <span style=color:#ae81ff>0</span>   40G  <span style=color:#ae81ff>0</span> part /
+sdb      8:16   <span style=color:#ae81ff>0</span>   10M  <span style=color:#ae81ff>0</span> disk
+$ sar -d <span style=color:#ae81ff>1</span>
+Linux 5.4.0-113-generic <span style=color:#f92672>(</span>cluster1-master1<span style=color:#f92672>)</span>      05/31/22        _x86_64_        <span style=color:#f92672>(</span><span style=color:#ae81ff>2</span> CPU<span style=color:#f92672>)</span>
+
+08:31:19          DEV       tps     rkB/s     wkB/s     dkB/s   areq-sz    aqu-sz     await     %util
+08:31:20       dev7-0      0.00      0.00      0.00      0.00      0.00      0.00      0.00      0.00
+08:31:20       dev7-1      0.00      0.00      0.00      0.00      0.00      0.00      0.00      0.00
+08:31:20       dev7-2      0.00      0.00      0.00      0.00      0.00      0.00      0.00      0.00
+08:31:20       dev7-3      0.00      0.00      0.00      0.00      0.00      0.00      0.00      0.00
+08:31:20       dev7-4      0.00      0.00      0.00      0.00      0.00      0.00      0.00      0.00
+08:31:20       dev7-5      0.00      0.00      0.00      0.00      0.00      0.00      0.00      0.00
+08:31:20       dev7-6      0.00      0.00      0.00      0.00      0.00      0.00      0.00      0.00
+08:31:20       dev8-0     18.00      0.00     92.00      0.00      5.11      0.00      0.17      2.40
+08:31:20      dev8-16      0.00      0.00      0.00      0.00      0.00      0.00      0.00      0.00
+</code></pre></div><p>local-path와 nfs-client의 피크 시 메트릭을 비교하면 await가 local-path가 더 높다. 이는 NFS 특성 상 네트워크 요청 병목 때문에 IOPS나 BW 등 성능이 더 낮게 나온 것으로 생각된다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># cluster1-worker1; local-path</span>
+$ sar --dev<span style=color:#f92672>=</span>dev8-0 -d <span style=color:#ae81ff>5</span>
+...
+07:57:53          DEV       tps     rkB/s     wkB/s     dkB/s   areq-sz    aqu-sz     await     %util
+07:57:58       dev8-0   2210.00  97584.80  38856.80      0.00     61.74    240.78    110.94     99.28
+
+07:57:58          DEV       tps     rkB/s     wkB/s     dkB/s   areq-sz    aqu-sz     await     %util
+07:58:03       dev8-0   1772.60  76728.00  32655.20      0.00     61.71    247.30    141.49    100.00
+
+07:58:03          DEV       tps     rkB/s     wkB/s     dkB/s   areq-sz    aqu-sz     await     %util
+07:58:08       dev8-0   2312.20 104272.80  45652.80      0.00     64.84    234.24    103.30     98.24
+...
+
+<span style=color:#75715e># cluster1-master1; nfs-client</span>
+$ sar --dev<span style=color:#f92672>=</span>dev8-0 -d <span style=color:#ae81ff>5</span>
+...
+08:20:46          DEV       tps     rkB/s     wkB/s     dkB/s   areq-sz    aqu-sz     await     %util
+08:20:51       dev8-0    510.00   5934.40  57926.40      0.00    125.22     11.15     23.63     85.20
+
+08:20:51          DEV       tps     rkB/s     wkB/s     dkB/s   areq-sz    aqu-sz     await     %util
+08:20:56       dev8-0    662.20   5815.20  61637.60      0.00    101.86      7.38     12.74     90.80
+
+08:20:56          DEV       tps     rkB/s     wkB/s     dkB/s   areq-sz    aqu-sz     await     %util
+08:21:01       dev8-0    610.78   5457.09  46407.19      0.00     84.92      7.08     13.16     95.17
+...
+</code></pre></div><h6 id=1-nodes-had-taint-nodekubernetesiodisk-pressurenoschedule>1 node(s) had taint node.kubernetes.io/disk-pressure:NoSchedule</h6>
+<p>kubestr fio로, 특히 nfs-client에 대해 테스트를 여러번 하다 보면, 디스크가 꽉 차서 파드 스케쥴이 안되는 현상이 발생한다.</p>
+<p>이 때 해당 노드(여기선 control-plane)은 node.kubernetes.io/disk-pressure:NoSchedule라는 테인트가 생긴 상태이므로, 디스크를 비워주고 테인트를 해제하자:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># cluster1-master1</span>
+$ rm -rf /nfs-storage/*
+$ df -h /nfs-storage/
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda1        39G   13G   26G  34% /
+$ k taint node cluster1-master1 node.kubernetes.io/disk-pressure:NoSchedule-
+
+</code></pre></div><h2 id=정리>정리</h2>
+<p>이번에도 소스는 DOIK 스터디였고, 지나가듯 나오는 kubestr fio 테스트를 해보려 이것저것 연습 수준에서 경험을 하게 됐다:</p>
+<ul>
+<li>우분투에 NFS 서버를 구성할 수 있다.</li>
+<li>kubestr로 저장소 클래스를 fio로 벤치마크 해 볼 수 있다.</li>
+<li>Disk Pressure로 파드 스케줄이 안되는 현상을 트러블슈팅 해 보았다.</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href="https://ko.linux-console.net/?p=631">https://ko.linux-console.net/?p=631</a></li>
+<li><a href=https://linux.die.net/man/5/exports>https://linux.die.net/man/5/exports</a></li>
+<li><a href=http://nfs.sourceforge.net/>http://nfs.sourceforge.net/</a></li>
+<li><a href=https://fio.readthedocs.io/en/latest/fio_doc.html>https://fio.readthedocs.io/en/latest/fio_doc.html</a></li>
+<li><a href=https://man7.org/linux/man-pages/man1/sar.1.html>https://man7.org/linux/man-pages/man1/sar.1.html</a></li>
+<li><a href=https://javawebigdata.tistory.com/entry/Kubernetes-%EA%B4%80%EB%A6%AC-taint-toleration-%EB%AC%B8%EC%A0%9C-disk-pressure>https://javawebigdata.tistory.com/entry/Kubernetes-%EA%B4%80%EB%A6%AC-taint-toleration-%EB%AC%B8%EC%A0%9C-disk-pressure</a></li>
+<li><a href=https://gasidaseo.notion.site/e49b329c833143d4a3b9715d75b5078d>https://gasidaseo.notion.site/e49b329c833143d4a3b9715d75b5078d</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
