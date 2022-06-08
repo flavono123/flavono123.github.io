@@ -1,0 +1,428 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Sysbench로 MySQL Operator 벤치마크 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>Sysbench로 MySQL Operator 벤치마크</h2>
+<small class=date>Tue Jun 7, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/kubernetes class=tag>kubernetes</a>
+<a href=https://flavono123.github.io/tags/mysql class=tag>mysql</a>
+</div>
+</div>
+<div class=content><p><a href=https://gasidaseo.notion.site/e49b329c833143d4a3b9715d75b5078d>쿠버네티스 데이터베이스 오퍼레이터 스터디</a> 2주차 도전과제로 <a href=https://dev.mysql.com/doc/mysql-operator/en/>MySQL Operator</a> 설치 후 <a href=https://github.com/akopytov/sysbench>Sysbench</a>로 벤치마크하는 과제를 진행했다. 여기서 벤치마크는, <a href=/posts/kubestr-and-monitoring-tools>Kubestr 실습</a>과 비슷하게, 하드웨어 또는 쿠버네티스 클러스터 구성이나 오퍼레이터와 같은 실제 인프라에 대한 벤치마크가 아닌 벤치마크 연습 정도이다.</p>
+<p>MySQL 서버 인스턴스를 최소 구성인 세대가 노드 하나씩에 분산하기 위해 <a href=https://github.com/flavono123/kubernetes-the-hard-way/commit/34d1a795ea890011708206b09dd5e2e39f566b42>워커 노드 하나를 추가</a>했다. 먼저 MySQL Operator를 헬름 차트로 설치해, 문서의 설명과 설치된 자원을 확인해본다. 그리고 sysbench를 실행해 결과를 확인한다.</p>
+<h2 id=mysql-operator>MySQL Operator</h2>
+<p><a href=https://dev.mysql.com/doc/mysql-operator/en/mysql-operator-installation-helm.html>다음 명령으로 MySQL Operator 헬름 차트를 설치한다</a>:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ helm repo add mysql-operator https://mysql.github.io/mysql-operator/
+$ helm repo update
+$ helm install mysql-operator mysql-operator/mysql-operator <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  --namespace mysql-operator --create-namespace --version 2.0.4
+</code></pre></div><p>차트 이름과 같은 오퍼레이터 디플로이먼트와 서비스가 생긴다. Values도 딱히 없고, 디플로이먼트(오퍼레이터) 레플리카는 1이다. 서비스는 이따 mysqlsh 접속할 때 사용한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$  k get all -n mysql-operator
+NAME                                  READY   STATUS    RESTARTS        AGE
+pod/mysql-operator-659ff68ccf-rqnvv   1/1     Running   <span style=color:#ae81ff>1</span> <span style=color:#f92672>(</span>3h17m ago<span style=color:#f92672>)</span>   3h17m
+
+NAME                     TYPE        CLUSTER-IP     EXTERNAL-IP   PORT<span style=color:#f92672>(</span>S<span style=color:#f92672>)</span>    AGE
+service/mysql-operator   ClusterIP   10.109.71.40   &lt;none&gt;        9443/TCP   5h55m
+
+NAME                             READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/mysql-operator   1/1     <span style=color:#ae81ff>1</span>            <span style=color:#ae81ff>1</span>           5h55m
+
+NAME                                        DESIRED   CURRENT   READY   AGE
+replicaset.apps/mysql-operator-659ff68ccf   <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>       5h55m
+</code></pre></div><h2 id=mysql-innodb-cluster>MySQL InnoDB Cluster</h2>
+<p><a href=https://dev.mysql.com/doc/mysql-operator/en/mysql-operator-innodbcluster-simple-helm.html>다음 명령으로 MySQL InnoDB Cluster 헬름 차트를 설치한다.</a> 위 오퍼레이터와 같은 레포이고, 현재 오퍼레이터는 InnoDB 클러스터만 지원한다. 필수로 지정해야하는 root 비밀번호와 실습에서 간단히 TLS를 비활성화(self-signed) 하기 위한 values를 넘겨준다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ helm install mycluster mysql-operator/mysql-innodbcluster <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  --set credentials.root.password<span style=color:#f92672>=</span><span style=color:#e6db74>&#39;sakila&#39;</span> <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  --set tls.useSelfSigned<span style=color:#f92672>=</span>true <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  --namespace mysql-cluster --create-namespace --version 2.0.4
+</code></pre></div><p>잘 설치 됐는지 <a href=https://dev.mysql.com/doc/mysql-operator/en/mysql-operator-introduction.html>문서</a>를 보며 확인한다. <a href=https://dev.mysql.com/doc/mysql-operator/en/images/mysql-operator-architecture.png>구조 그림</a>에서 <strong>InnoDB Cluster</strong> 부분만 있을 것이다(<strong>Deployment</strong>(오퍼레이터)는 앞서 확인했다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k get sts -n mysql-cluster -owide
+NAME        READY   AGE    CONTAINERS      IMAGES
+mycluster   3/3     9m4s   sidecar,mysql   mysql/mysql-operator:8.0.29-2.0.4,mysql/mysql-server:8.0.29
+
+$ k get pod -n mysql-cluster -l component<span style=color:#f92672>=</span>mysqld -owide
+NAME          READY   STATUS    RESTARTS   AGE
+mycluster-0   2/2     Running   <span style=color:#ae81ff>0</span>          8m58s
+mycluster-1   2/2     Running   <span style=color:#ae81ff>0</span>          8m58s
+mycluster-2   2/2     Running   <span style=color:#ae81ff>0</span>          8m58s
+
+</code></pre></div><ul>
+<li>그림처럼 기본으로 서버 인스턴스 3대(1 Primary + 2 Secondary)가 스테이트풀셋으로 설치된다.</li>
+<li>각 파드는 mysqld와 사이드카 두 개의 컨테이너가 있다.</li>
+</ul>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># MySQL Instances</span>
+$ k get deploy -n mysql-cluster
+NAME               READY   UP-TO-DATE   AVAILABLE   AGE
+mycluster-router   1/1     <span style=color:#ae81ff>1</span>            <span style=color:#ae81ff>1</span>           10m
+
+$ k get pod -n mysql-cluster -l component<span style=color:#f92672>=</span>mysqlrouter
+NAME                                READY   STATUS    RESTARTS   AGE
+mycluster-router-5f9758dc8f-t8mw6   1/1     Running   <span style=color:#ae81ff>0</span>          8m47s
+
+</code></pre></div><p>라우터는 디플로이먼트 레플리카 1개로 생성됐다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># MySQL Router</span>
+$ k get svc -n mysql-cluster
+NAME                  TYPE        CLUSTER-IP      EXTERNAL-IP   PORT<span style=color:#f92672>(</span>S<span style=color:#f92672>)</span>                                                  AGE
+mycluster             ClusterIP   10.99.191.158   &lt;none&gt;        3306/TCP,33060/TCP,6446/TCP,6448/TCP,6447/TCP,6449/TCP   11m
+mycluster-instances   ClusterIP   None            &lt;none&gt;        3306/TCP,33060/TCP,33061/TCP                             11m
+</code></pre></div><p>라우터의 서비스 <code>myscluster</code>(= 클러스터 이름 = 차트 이름)와 스테이트풀셋 파드 각각 식별, 접근할 수 있는 헤드리스 서비스가 노출되어 있다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># Configmap &amp; Secrets</span>
+$ k get cm -n mysql-cluster mycluster-initconf
+NAME                 DATA   AGE
+mycluster-initconf   <span style=color:#ae81ff>8</span>      11m
+
+$ k get secret -n mysql-cluster | grep mycluster
+
+mycluster-backup                  Opaque                                <span style=color:#ae81ff>2</span>      13m
+mycluster-cluster-secret          Opaque                                <span style=color:#ae81ff>3</span>      13m
+mycluster-privsecrets             Opaque                                <span style=color:#ae81ff>2</span>      13m
+mycluster-router                  Opaque                                <span style=color:#ae81ff>2</span>      13m
+mycluster-sa-token-v6dnx          kubernetes.io/service-account-token   <span style=color:#ae81ff>3</span>      13m
+sh.helm.release.v1.mycluster.v1   helm.sh/release.v1                    <span style=color:#ae81ff>1</span>      13m
+</code></pre></div><p>my.cnf에 해당하는 컨피그맵과 서비스 계정이 사용하는 시크릿이 추가됐다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># PVC &amp; PV</span>
+$ k get pvc -n mysql-cluster
+NAME                  STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+datadir-mycluster-0   Bound    pvc-89f9d61f-bde9-4bb6-8cbd-6cef17566079   2Gi        RWO            local-path     116m
+datadir-mycluster-1   Bound    pvc-73019433-cc69-4285-8a60-8c5d4c72a9f1   2Gi        RWO            local-path     116m
+datadir-mycluster-2   Bound    pvc-56455d92-64a7-4f99-a9c7-072f2ff77992   2Gi        RWO            local-path     116m
+
+$ k get pv | grep mysql-cluster
+pvc-56455d92-64a7-4f99-a9c7-072f2ff77992   2Gi        RWO            Delete           Bound    mysql-cluster/datadir-mycluster-2   local-path              118m
+pvc-73019433-cc69-4285-8a60-8c5d4c72a9f1   2Gi        RWO            Delete           Bound    mysql-cluster/datadir-mycluster-1   local-path              118m
+pvc-89f9d61f-bde9-4bb6-8cbd-6cef17566079   2Gi        RWO            Delete
+</code></pre></div><p>각 서버 인스턴스마다 PV & PVC가 생성됐다. 여기선 실습 환경의 기본 저장소 클래스인 <a href=https://github.com/rancher/local-path-provisioner>local-path</a>가 사용됐다.</p>
+<p>이런 쿠버네티스 리소스 셋을 정의한 커스텀 리소스 <a href=https://dev.mysql.com/doc/mysql-operator/en/mysql-operator-properties.html>InnoDBCluster</a>도 생성된다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># InnoDBCluster</span>
+k get innodbclusters.mysql.oracle.com -n mysql-cluster
+NAME        STATUS           ONLINE   INSTANCES   ROUTERS   AGE
+mycluster   ONLINE           <span style=color:#ae81ff>3</span>        <span style=color:#ae81ff>3</span>           <span style=color:#ae81ff>1</span>         4h40m
+</code></pre></div><p>추가로 오퍼레이터 설치 시 생긴 CRD가 궁금해 살펴보다가, MySQL Operator는 <a href=https://kopf.readthedocs.io/en/latest/>kopf(Kubernetes Operator Pythonic Framework)</a>라는 파이썬 프레임워크로 만들었단 사실을 알게 됐다(자세한 내용은 아직 모른다):</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># MySQL Operator 설치 시 추가된 CRD</span>
+k get crd | grep -E <span style=color:#e6db74>&#39;(mysql[.]oracle[.]com|zalando[.]org)&#39;</span>
+clusterkopfpeerings.zalando.org                       2022-06-08T00:15:48Z
+innodbclusters.mysql.oracle.com                       2022-06-08T00:15:48Z
+kopfpeerings.zalando.org                              2022-06-08T00:15:48Z
+mysqlbackups.mysql.oracle.com                         2022-06-08T00:15:48Z
+</code></pre></div><h2 id=sysbench>Sysbench</h2>
+<p>Sysbench는 이름 그대로 시스템 메트릭을 벤치마크할 수 있는 도구인데, 대상이 MySQL을 포함한 몇몇 데이터베이스도 벤치마크 할 수 있게 확장되었다. 또 Lua 스크립트로 벤치마크 시나리오를 만들 수 있다. <a href=https://github.com/akopytov/sysbench/tree/master/src/lua>기본으로 제공되는 OTLP 벤치마크 스크립트</a>를 사용해볼 것이다.</p>
+<p>Sysbench는 제공되는 컨테이너 이미지가 딱 원하는 것이 없어서 맨 처음엔 노드에 설치하여 벤치마크 했으나, 기본 ClusterIP인 InnoDB Cluster 라우터의 서비스를 NodePort로 변경해야 하는 등 번거로움이 있었다. 그래서 하나 만들었다(<a href=https://hub.docker.com/repository/docker/vonogoru123/sysbench>이미지</a>, <a href=https://github.com/flavono123/sysbench-docker>코드</a>). 인자 없이 기본으로 실행하면 sysbench help 메시지를 볼 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k run sysbench --image<span style=color:#f92672>=</span>vonogoru123/sysbench -it --restart<span style=color:#f92672>=</span>Never
+Usage:
+  sysbench <span style=color:#f92672>[</span>options<span style=color:#f92672>]</span>... <span style=color:#f92672>[</span>testname<span style=color:#f92672>]</span> <span style=color:#f92672>[</span>command<span style=color:#f92672>]</span>
+
+Commands implemented by most tests: prepare run cleanup help
+
+General options:
+  --threads<span style=color:#f92672>=</span>N                     number of threads to use <span style=color:#f92672>[</span>1<span style=color:#f92672>]</span>
+  --events<span style=color:#f92672>=</span>N                      limit <span style=color:#66d9ef>for</span> total number of events <span style=color:#f92672>[</span>0<span style=color:#f92672>]</span>
+  --time<span style=color:#f92672>=</span>N                        limit <span style=color:#66d9ef>for</span> total execution time in seconds <span style=color:#f92672>[</span>10<span style=color:#f92672>]</span>
+  --forced-shutdown<span style=color:#f92672>=</span>STRING        number of seconds to wait after the --time limit before forcing shutdown, or <span style=color:#e6db74>&#39;off&#39;</span> to disable
+ <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+  --thread-stack-size<span style=color:#f92672>=</span>SIZE        size of stack per thread <span style=color:#f92672>[</span>64K<span style=color:#f92672>]</span>
+  --rate<span style=color:#f92672>=</span>N                        average transactions rate. <span style=color:#ae81ff>0</span> <span style=color:#66d9ef>for</span> unlimited rate <span style=color:#f92672>[</span>0<span style=color:#f92672>]</span>
+  --report-interval<span style=color:#f92672>=</span>N             periodically report intermediate statistics with a specified interval in seconds. <span style=color:#ae81ff>0</span> disables
+intermediate reports <span style=color:#f92672>[</span>0<span style=color:#f92672>]</span>
+  --report-checkpoints<span style=color:#f92672>=[</span>LIST,...<span style=color:#f92672>]</span> dump full statistics and reset all counters at specified points in time. The argument is a li
+st of comma-separated values representing the amount of time in seconds elapsed from start of test when report checkpoint<span style=color:#f92672>(</span>s<span style=color:#f92672>)</span> mu
+st be performed. Report checkpoints are off by default. <span style=color:#f92672>[]</span>
+  --debug<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>                print more debugging info <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+  --validate<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>             perform validation checks where possible <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+  --help<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>                 print help and exit <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+  --version<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>              print version and exit <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+  --config-file<span style=color:#f92672>=</span>FILENAME          File containing command line options
+  --tx-rate<span style=color:#f92672>=</span>N                     deprecated alias <span style=color:#66d9ef>for</span> --rate <span style=color:#f92672>[</span>0<span style=color:#f92672>]</span>
+  --max-requests<span style=color:#f92672>=</span>N                deprecated alias <span style=color:#66d9ef>for</span> --events <span style=color:#f92672>[</span>0<span style=color:#f92672>]</span>
+  --max-time<span style=color:#f92672>=</span>N                    deprecated alias <span style=color:#66d9ef>for</span> --time <span style=color:#f92672>[</span>0<span style=color:#f92672>]</span>
+  --num-threads<span style=color:#f92672>=</span>N                 deprecated alias <span style=color:#66d9ef>for</span> --threads <span style=color:#f92672>[</span>1<span style=color:#f92672>]</span>
+
+Pseudo-Random Numbers Generator options:
+  --rand-type<span style=color:#f92672>=</span>STRING random numbers distribution <span style=color:#f92672>{</span>uniform,gaussian,special,pareto<span style=color:#f92672>}</span> <span style=color:#f92672>[</span>special<span style=color:#f92672>]</span>
+  --rand-spec-iter<span style=color:#f92672>=</span>N number of iterations used <span style=color:#66d9ef>for</span> numbers generation <span style=color:#f92672>[</span>12<span style=color:#f92672>]</span>
+  --rand-spec-pct<span style=color:#f92672>=</span>N  percentage of values to be treated as <span style=color:#e6db74>&#39;special&#39;</span> <span style=color:#f92672>(</span><span style=color:#66d9ef>for</span> special distribution<span style=color:#f92672>)</span> <span style=color:#f92672>[</span>1<span style=color:#f92672>]</span>
+  --rand-spec-res<span style=color:#f92672>=</span>N  percentage of <span style=color:#e6db74>&#39;special&#39;</span> values to use <span style=color:#f92672>(</span><span style=color:#66d9ef>for</span> special distribution<span style=color:#f92672>)</span> <span style=color:#f92672>[</span>75<span style=color:#f92672>]</span>
+  --rand-seed<span style=color:#f92672>=</span>N      seed <span style=color:#66d9ef>for</span> random number generator. When 0, the current time is used as a RNG seed. <span style=color:#f92672>[</span>0<span style=color:#f92672>]</span>             <span style=color:#f92672>[</span>1/1991<span style=color:#f92672>]</span>
+  --rand-pareto-h<span style=color:#f92672>=</span>N  parameter h <span style=color:#66d9ef>for</span> pareto distribution <span style=color:#f92672>[</span>0.2<span style=color:#f92672>]</span>
+
+Log options:
+  --verbosity<span style=color:#f92672>=</span>N verbosity level <span style=color:#f92672>{</span><span style=color:#ae81ff>5</span> - debug, <span style=color:#ae81ff>0</span> - only critical messages<span style=color:#f92672>}</span> <span style=color:#f92672>[</span>3<span style=color:#f92672>]</span>
+
+  --percentile<span style=color:#f92672>=</span>N       percentile to calculate in latency statistics <span style=color:#f92672>(</span>1-100<span style=color:#f92672>)</span>. Use the special value of <span style=color:#ae81ff>0</span> to disable percentile
+calculations <span style=color:#f92672>[</span>95<span style=color:#f92672>]</span>
+  --histogram<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span> print latency histogram in report <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+
+General database options:
+
+  --db-driver<span style=color:#f92672>=</span>STRING  specifies database driver to use <span style=color:#f92672>(</span><span style=color:#e6db74>&#39;help&#39;</span> to get list of available drivers<span style=color:#f92672>)</span> <span style=color:#f92672>[</span>mysql<span style=color:#f92672>]</span>
+  --db-ps-mode<span style=color:#f92672>=</span>STRING prepared statements usage mode <span style=color:#f92672>{</span>auto, disable<span style=color:#f92672>}</span> <span style=color:#f92672>[</span>auto<span style=color:#f92672>]</span>
+  --db-debug<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span> print database-specific debug information <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+
+
+Compiled-in database drivers:
+  mysql - MySQL driver
+
+mysql options:
+  --mysql-host<span style=color:#f92672>=[</span>LIST,...<span style=color:#f92672>]</span>          MySQL server host <span style=color:#f92672>[</span>localhost<span style=color:#f92672>]</span>
+  --mysql-port<span style=color:#f92672>=[</span>LIST,...<span style=color:#f92672>]</span>          MySQL server port <span style=color:#f92672>[</span>3306<span style=color:#f92672>]</span>
+  --mysql-socket<span style=color:#f92672>=[</span>LIST,...<span style=color:#f92672>]</span>        MySQL socket
+  --mysql-user<span style=color:#f92672>=</span>STRING              MySQL user <span style=color:#f92672>[</span>sbtest<span style=color:#f92672>]</span>
+  --mysql-password<span style=color:#f92672>=</span>STRING          MySQL password <span style=color:#f92672>[]</span>
+  --mysql-db<span style=color:#f92672>=</span>STRING                MySQL database name <span style=color:#f92672>[</span>sbtest<span style=color:#f92672>]</span>
+  --mysql-ssl<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>             use SSL connections, <span style=color:#66d9ef>if</span> available in the client library <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+  --mysql-ssl-cipher<span style=color:#f92672>=</span>STRING        use specific cipher <span style=color:#66d9ef>for</span> SSL connections <span style=color:#f92672>[]</span>
+  --mysql-compression<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>     use compression, <span style=color:#66d9ef>if</span> available in the client library <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+  --mysql-debug<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>           trace all client library calls <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+  --mysql-ignore-errors<span style=color:#f92672>=[</span>LIST,...<span style=color:#f92672>]</span> list of errors to ignore, or <span style=color:#e6db74>&#34;all&#34;</span> <span style=color:#f92672>[</span>1213,1020,1205<span style=color:#f92672>]</span>
+  --mysql-dry-run<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>         Dry run, pretend that all MySQL client API calls are successful without executing them <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+
+Compiled-in tests:
+  fileio - File I/O test
+  cpu - CPU performance test
+  memory - Memory functions speed test
+  threads - Threads subsystem performance test
+  mutex - Mutex performance test
+
+See <span style=color:#e6db74>&#39;sysbench &lt;testname&gt; help&#39;</span> <span style=color:#66d9ef>for</span> a list of options <span style=color:#66d9ef>for</span> each test.
+
+</code></pre></div><p>엄청 길지만 사용할 옵션과 명령은 한정적이다. 먼저 sysbench는 prepare -> run -> cleanup 순서의 서브 명령으로 실행된다.</p>
+<p>테스트 이름은 내장된 lua 스크립트를 사용할 것이고, 내장된 스크립트의 상위 디렉토리 경로는 <a href=https://github1s.com/flavono123/sysbench-docker/blob/HEAD/Dockerfile#L5-L17>내가 만든 이미지처럼 컴파일 버전</a>에선 <code>/usr/local/share/sysbench/</code> 이다.</p>
+<p>MySQL 벤치마크만 할 것이므로 <code>--db-driver=mysql</code> 옵션과 MySQL 접속 정보 <code>--mysql-*</code> 옵션은 고정이다.</p>
+<p>나머지 중에 사용할 옵션은 벤치마크 시 이벤트 쿼리하는 스레드 개수(<code>--threads=N</code>)와 벤치마크 시간 초(<code>--time=N</code>).</p>
+<p>테스트 특정해서 사용할 옵션은 테이블 개수(<code>--tables=N</code>), 테이블 당 레코드 수(<code>--table-size=N</code>) 그리고 리포트 주기(<code>--report-interval=N</code>)이다. 테스트 할 <a href=https://github1s.com/akopytov/sysbench/blob/HEAD/src/lua/oltp_read_only.lua#L48>oltp_read_only</a>에 대해 <code>help</code>를 보면 옵션을 알 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k run sysbench --image<span style=color:#f92672>=</span>vonogoru123/sysbench -it --restart<span style=color:#f92672>=</span>Never -- /usr/local/share/sysbench/oltp_read_only.lua help
+sysbench 1.0.20 <span style=color:#f92672>(</span>using bundled LuaJIT 2.1.0-beta2<span style=color:#f92672>)</span>
+
+oltp_read_only.lua options:
+  --auto_inc<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>           Use AUTO_INCREMENT column as Primary Key <span style=color:#f92672>(</span><span style=color:#66d9ef>for</span> MySQL<span style=color:#f92672>)</span>, or its alternatives in other DBMS. When disabled, use client-generated IDs <span style=color:#f92672>[</span>on<span style=color:#f92672>]</span>
+  --create_secondary<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>   Create a secondary index in addition to the PRIMARY KEY <span style=color:#f92672>[</span>on<span style=color:#f92672>]</span>
+  --delete_inserts<span style=color:#f92672>=</span>N            Number of DELETE/INSERT combinations per transaction <span style=color:#f92672>[</span>1<span style=color:#f92672>]</span>
+  --distinct_ranges<span style=color:#f92672>=</span>N           Number of SELECT DISTINCT queries per transaction <span style=color:#f92672>[</span>1<span style=color:#f92672>]</span>
+  --index_updates<span style=color:#f92672>=</span>N             Number of UPDATE index queries per transaction <span style=color:#f92672>[</span>1<span style=color:#f92672>]</span>
+  --mysql_storage_engine<span style=color:#f92672>=</span>STRING Storage engine, <span style=color:#66d9ef>if</span> MySQL is used <span style=color:#f92672>[</span>innodb<span style=color:#f92672>]</span>
+  --non_index_updates<span style=color:#f92672>=</span>N         Number of UPDATE non-index queries per transaction <span style=color:#f92672>[</span>1<span style=color:#f92672>]</span>
+  --order_ranges<span style=color:#f92672>=</span>N              Number of SELECT ORDER BY queries per transaction <span style=color:#f92672>[</span>1<span style=color:#f92672>]</span>
+  --pgsql_variant<span style=color:#f92672>=</span>STRING        Use this PostgreSQL variant when running with the PostgreSQL driver. The only currently supported variant is <span style=color:#e6db74>&#39;redshift&#39;</span>. When enabled, create_secondary is automatically disabled, and delete_inserts is set to <span style=color:#ae81ff>0</span>
+  --point_selects<span style=color:#f92672>=</span>N             Number of point SELECT queries per transaction <span style=color:#f92672>[</span>10<span style=color:#f92672>]</span>
+  --range_selects<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>      Enable/disable all range SELECT queries <span style=color:#f92672>[</span>on<span style=color:#f92672>]</span>
+  --range_size<span style=color:#f92672>=</span>N                Range size <span style=color:#66d9ef>for</span> range SELECT queries <span style=color:#f92672>[</span>100<span style=color:#f92672>]</span>
+  --secondary<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>          Use a secondary index in place of the PRIMARY KEY <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+  --simple_ranges<span style=color:#f92672>=</span>N             Number of simple range SELECT queries per transaction <span style=color:#f92672>[</span>1<span style=color:#f92672>]</span>
+  --skip_trx<span style=color:#f92672>[=</span>on|off<span style=color:#f92672>]</span>           Don<span style=color:#960050;background-color:#1e0010>&#39;</span>t start explicit transactions and execute all queries in the AUTOCOMMIT mode <span style=color:#f92672>[</span>off<span style=color:#f92672>]</span>
+  --sum_ranges<span style=color:#f92672>=</span>N                Number of SELECT SUM<span style=color:#f92672>()</span> queries per transaction <span style=color:#f92672>[</span>1<span style=color:#f92672>]</span>
+  --table_size<span style=color:#f92672>=</span>N                Number of rows per table <span style=color:#f92672>[</span>10000<span style=color:#f92672>]</span>
+  --tables<span style=color:#f92672>=</span>N                    Number of tables <span style=color:#f92672>[</span>1<span style=color:#f92672>]</span>
+</code></pre></div><p>예를 들어, 서브 명령 <code>run</code>을 실행한다면 옵션은 다음과 같다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ sysbench --db-driver<span style=color:#f92672>=</span>mysql <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  --mysql-host<span style=color:#f92672>=</span>mycluster.mysql-cluster --mysql-port<span style=color:#f92672>=</span><span style=color:#ae81ff>3306</span>
+  --mysql-user<span style=color:#f92672>=</span>sysbench --mysql-password<span style=color:#f92672>=</span>sysbench --mysql-db<span style=color:#f92672>=</span>sysbench <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  --report-interval<span style=color:#f92672>=</span><span style=color:#ae81ff>1</span> --table-size<span style=color:#f92672>=</span><span style=color:#ae81ff>100000</span> --threads<span style=color:#f92672>=</span><span style=color:#ae81ff>4</span> --tables<span style=color:#f92672>=</span><span style=color:#ae81ff>2</span> <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  /usr/local/share/sysbench/oltp_read_only.lua run
+</code></pre></div><p>접속 호스트는 앞서 언급한 <code>InnoDBCluster</code>의 라우터 서비스로 한다.</p>
+<p>레코드 1M개의 테이블은 인덱스를 포함해 약 200MB 정도이다. 그리고 테이블은 2개로 했는데, 레코드나 테이블 이 이상 크기로 벤치마크하면 소박한 나의 로컬 환경(<a href=https://kubernetes.io/ko/docs/setup/production-environment/tools/kubeadm/install-kubeadm/#%EC%8B%9C%EC%9E%91%ED%95%98%EA%B8%B0-%EC%A0%84%EC%97%90>kubeadm의 최소 사양</a>이다)에선 오퍼레이터나 클러스터의 MySQL 인스턴스가 잘 작동하지 않고, 벤치마크 테이블 생성 또는 벤치마크 중 오류가 났다.</p>
+<p>접속 정보 옵션에 해당하는 계정(+권한), 데이터베이스를 직접 만들어 준다. <code>mysqlsh</code> 접속을 위해 위에서 언급한 오퍼레이터 파드를 사용한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k exec -it -n mysql-operator deploy/mysql-operator -- <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  mysqlsh mysqlx://root@mycluster.mysql-cluster --password<span style=color:#f92672>=</span>sakila --sqlx <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  -e <span style=color:#e6db74>&#34;CREATE DATABASE IF NOT EXISTS sysbench;
+</span><span style=color:#e6db74>      CREATE USER IF NOT EXISTS &#39;sysbench&#39;@&#39;%&#39; IDENTIFIED WITH &#39;mysql_native_password&#39; BY &#39;sysbench&#39;;
+</span><span style=color:#e6db74>      GRANT ALL ON sysbench.* to &#39;sysbench&#39;@&#39;%&#39;;
+</span><span style=color:#e6db74>      FLUSH PRIVILEGES;
+</span></code></pre></div><p>preprae -> run -> cleanup 세 개의 파드가 순서대로 실행하기 위해 <a href=https://kubernetes.io/docs/concepts/workloads/pods/init-containers/>initContainers</a>를 활용한 파드 Job을 만들었다. 비교적 적은 개수의 컨테이너가 순서대로만 실행되면 되기에 워크플로우 리소스는 사용하지 않았다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#f92672>apiVersion</span>: <span style=color:#ae81ff>batch/v1</span>
+<span style=color:#f92672>kind</span>: <span style=color:#ae81ff>Job</span>
+<span style=color:#f92672>metadata</span>:
+  <span style=color:#f92672>creationTimestamp</span>: <span style=color:#66d9ef>null</span>
+  <span style=color:#f92672>name</span>: <span style=color:#ae81ff>sysbench-oltp-read-only</span>
+<span style=color:#f92672>spec</span>:
+  <span style=color:#f92672>template</span>:
+    <span style=color:#f92672>metadata</span>:
+      <span style=color:#f92672>creationTimestamp</span>: <span style=color:#66d9ef>null</span>
+    <span style=color:#f92672>spec</span>:
+      <span style=color:#f92672>initContainers</span>:
+      - <span style=color:#f92672>args</span>:
+        - --<span style=color:#ae81ff>db-driver=mysql</span>
+        - --<span style=color:#ae81ff>mysql-host=mycluster.mysql-cluster</span>
+        - --<span style=color:#ae81ff>mysql-port=3306</span>
+        - --<span style=color:#ae81ff>mysql-user=sysbench</span>
+        - --<span style=color:#ae81ff>mysql-password=sysbench</span>
+        - --<span style=color:#ae81ff>mysql-db=sysbench</span>
+        - --<span style=color:#ae81ff>table-size=1000000</span>
+        - --<span style=color:#ae81ff>threads=4</span>
+        - --<span style=color:#ae81ff>tables=2</span>
+        - <span style=color:#ae81ff>/usr/local/share/sysbench/oltp_read_only.lua</span>
+        - <span style=color:#ae81ff>prepare</span>
+        <span style=color:#f92672>image</span>: <span style=color:#ae81ff>vonogoru123/sysbench</span>
+        <span style=color:#f92672>name</span>: <span style=color:#ae81ff>sysbench-prepare</span>
+      - <span style=color:#f92672>args</span>:
+        - --<span style=color:#ae81ff>db-driver=mysql</span>
+        - --<span style=color:#ae81ff>mysql-host=mycluster.mysql-cluster</span>
+        - --<span style=color:#ae81ff>mysql-port=3306</span>
+        - --<span style=color:#ae81ff>mysql-user=sysbench</span>
+        - --<span style=color:#ae81ff>mysql-password=sysbench</span>
+        - --<span style=color:#ae81ff>mysql-db=sysbench</span>
+        - --<span style=color:#ae81ff>report-interval=10</span>
+        - --<span style=color:#ae81ff>table-size=1000000</span>
+        - --<span style=color:#ae81ff>threads=4</span>
+        - --<span style=color:#ae81ff>tables=2</span>
+        - --<span style=color:#ae81ff>time=180</span>
+        - <span style=color:#ae81ff>/usr/local/share/sysbench/oltp_read_only.lua</span>
+        - <span style=color:#ae81ff>run</span>
+        <span style=color:#f92672>image</span>: <span style=color:#ae81ff>vonogoru123/sysbench</span>
+        <span style=color:#f92672>name</span>: <span style=color:#ae81ff>sysbench-run</span>
+      <span style=color:#f92672>containers</span>:
+      - <span style=color:#f92672>args</span>:
+        - --<span style=color:#ae81ff>db-driver=mysql</span>
+        - --<span style=color:#ae81ff>mysql-host=mycluster.mysql-cluster</span>
+        - --<span style=color:#ae81ff>mysql-port=3306</span>
+        - --<span style=color:#ae81ff>mysql-user=sysbench</span>
+        - --<span style=color:#ae81ff>mysql-password=sysbench</span>
+        - --<span style=color:#ae81ff>mysql-db=sysbench</span>
+        - --<span style=color:#ae81ff>table-size=1000000</span>
+        - --<span style=color:#ae81ff>threads=4</span>
+        - --<span style=color:#ae81ff>tables=2</span>
+        - <span style=color:#ae81ff>/usr/local/share/sysbench/oltp_read_only.lua</span>
+        - <span style=color:#ae81ff>cleanup</span>
+        <span style=color:#f92672>image</span>: <span style=color:#ae81ff>vonogoru123/sysbench</span>
+        <span style=color:#f92672>name</span>: <span style=color:#ae81ff>sysbench-cleanup</span>
+      <span style=color:#f92672>nodeSelector</span>:
+        <span style=color:#f92672>kubernetes.io/hostname</span>: <span style=color:#ae81ff>cluster1-master1</span>
+      <span style=color:#f92672>tolerations</span>:
+      - <span style=color:#f92672>key</span>: <span style=color:#ae81ff>node-role.kubernetes.io/master</span>
+        <span style=color:#f92672>operator</span>: <span style=color:#ae81ff>Exists</span>
+        <span style=color:#f92672>effect</span>: <span style=color:#ae81ff>NoSchedule</span>
+      <span style=color:#f92672>restartPolicy</span>: <span style=color:#ae81ff>Never</span>
+<span style=color:#f92672>status</span>: {}
+</code></pre></div><p>Job을 실행하고 각 컨테이너 로그를 확인하자. 먼저 prepare에선 옵션으로 준 크기의, 벤치마크할 테이블을 만든다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k apply -f sysbench-oltp-read-only.yaml
+
+$ k logs -f job/sysbench-oltp-read-only sysbench-prepare
+sysbench 1.0.20 <span style=color:#f92672>(</span>using bundled LuaJIT 2.1.0-beta2<span style=color:#f92672>)</span>
+
+Initializing worker threads...
+
+Creating table <span style=color:#e6db74>&#39;sbtest1&#39;</span>...
+Creating table <span style=color:#e6db74>&#39;sbtest2&#39;</span>...
+Inserting <span style=color:#ae81ff>1000000</span> records into <span style=color:#e6db74>&#39;sbtest2&#39;</span>
+Inserting <span style=color:#ae81ff>1000000</span> records into <span style=color:#e6db74>&#39;sbtest1&#39;</span>
+Creating a secondary index on <span style=color:#e6db74>&#39;sbtest1&#39;</span>...
+Creating a secondary index on <span style=color:#e6db74>&#39;sbtest2&#39;</span>...
+
+</code></pre></div><p>mysqlsh에서 테이블 크기를 확인해본다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sql data-lang=sql><span style=color:#66d9ef>SELECT</span> <span style=color:#66d9ef>table_name</span>, round((data_length <span style=color:#f92672>+</span> index_length) <span style=color:#f92672>/</span> <span style=color:#ae81ff>1024</span> <span style=color:#f92672>/</span> <span style=color:#ae81ff>1024</span>, <span style=color:#ae81ff>2</span>) <span style=color:#f92672>`</span>MB<span style=color:#f92672>`</span> <span style=color:#66d9ef>FROM</span> information_schema.TABLES <span style=color:#66d9ef>WHERE</span> table_schema <span style=color:#f92672>=</span> <span style=color:#e6db74>&#39;sysbench&#39;</span>;
+<span style=color:#f92672>+</span><span style=color:#75715e>------------+--------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span> <span style=color:#66d9ef>TABLE_NAME</span> <span style=color:#f92672>|</span> MB     <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------------+--------+
+</span><span style=color:#75715e></span><span style=color:#f92672>|</span> sbtest1    <span style=color:#f92672>|</span> <span style=color:#ae81ff>208</span>.<span style=color:#ae81ff>70</span> <span style=color:#f92672>|</span>
+<span style=color:#f92672>|</span> sbtest2    <span style=color:#f92672>|</span> <span style=color:#ae81ff>207</span>.<span style=color:#ae81ff>70</span> <span style=color:#f92672>|</span>
+<span style=color:#f92672>+</span><span style=color:#75715e>------------+--------+
+</span><span style=color:#75715e></span><span style=color:#ae81ff>2</span> <span style=color:#66d9ef>rows</span> <span style=color:#66d9ef>in</span> <span style=color:#66d9ef>set</span> (<span style=color:#ae81ff>0</span>.<span style=color:#ae81ff>0365</span> sec)
+
+</code></pre></div><p>run 컨테이너 로그를 확인해 벤치마크 보고서를 본다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k logs -f job/sysbench-oltp-read-only sysbench-run
+sysbench 1.0.20 <span style=color:#f92672>(</span>using bundled LuaJIT 2.1.0-beta2<span style=color:#f92672>)</span>
+
+Running the test with following options:
+Number of threads: <span style=color:#ae81ff>4</span>
+Report intermediate results every <span style=color:#ae81ff>10</span> second<span style=color:#f92672>(</span>s<span style=color:#f92672>)</span>
+Initializing random number generator from current time
+
+
+Initializing worker threads...
+
+Threads started!
+
+<span style=color:#f92672>[</span> 10s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 186.45 qps: 2984.98 <span style=color:#f92672>(</span>r/w/o: 2611.77/0.00/373.21<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 33.12 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 20s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 179.01 qps: 2866.71 <span style=color:#f92672>(</span>r/w/o: 2508.58/0.00/358.13<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 33.72 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 30s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 172.99 qps: 2766.28 <span style=color:#f92672>(</span>r/w/o: 2420.31/0.00/345.97<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 36.24 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 40s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 173.90 qps: 2783.98 <span style=color:#f92672>(</span>r/w/o: 2436.19/0.00/347.80<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 34.33 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 50s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 174.71 qps: 2795.41 <span style=color:#f92672>(</span>r/w/o: 2445.99/0.00/349.41<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 33.72 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 60s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 160.09 qps: 2560.14 <span style=color:#f92672>(</span>r/w/o: 2239.96/0.00/320.18<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 40.37 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 70s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 172.01 qps: 2751.38 <span style=color:#f92672>(</span>r/w/o: 2407.36/0.00/344.02<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 34.95 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 80s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 173.00 qps: 2769.54 <span style=color:#f92672>(</span>r/w/o: 2423.53/0.00/346.00<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 34.33 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 90s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 172.20 qps: 2753.82 <span style=color:#f92672>(</span>r/w/o: 2409.42/0.00/344.40<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 33.72 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 100s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 171.59 qps: 2747.06 <span style=color:#f92672>(</span>r/w/o: 2403.88/0.00/343.18<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 34.33 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 110s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 168.50 qps: 2694.94 <span style=color:#f92672>(</span>r/w/o: 2357.94/0.00/337.01<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 36.89 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 120s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 173.31 qps: 2773.24 <span style=color:#f92672>(</span>r/w/o: 2426.62/0.00/346.62<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 34.95 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 130s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 171.19 qps: 2739.61 <span style=color:#f92672>(</span>r/w/o: 2397.22/0.00/342.39<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 34.33 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 140s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 165.00 qps: 2640.04 <span style=color:#f92672>(</span>r/w/o: 2310.04/0.00/330.01<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 36.89 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 150s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 166.99 qps: 2672.52 <span style=color:#f92672>(</span>r/w/o: 2338.44/0.00/334.08<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 34.95 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 160s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 148.11 qps: 2367.50 <span style=color:#f92672>(</span>r/w/o: 2071.39/0.00/296.11<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 44.17 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 170s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 159.00 qps: 2543.83 <span style=color:#f92672>(</span>r/w/o: 2225.93/0.00/317.90<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 38.25 err/s: 0.00 reconn/s: 0.00
+<span style=color:#f92672>[</span> 180s <span style=color:#f92672>]</span> thds: <span style=color:#ae81ff>4</span> tps: 168.50 qps: 2696.55 <span style=color:#f92672>(</span>r/w/o: 2359.44/0.00/337.11<span style=color:#f92672>)</span> lat <span style=color:#f92672>(</span>ms,95%<span style=color:#f92672>)</span>: 35.59 err/s: 0.00 reconn/s: 0.00
+SQL statistics:
+    queries performed:
+        read:                            <span style=color:#ae81ff>427980</span>
+        write:                           <span style=color:#ae81ff>0</span>
+        other:                           <span style=color:#ae81ff>61140</span>
+        total:                           <span style=color:#ae81ff>489120</span>
+    transactions:                        <span style=color:#ae81ff>30570</span>  <span style=color:#f92672>(</span>169.81 per sec.<span style=color:#f92672>)</span>
+    queries:                             <span style=color:#ae81ff>489120</span> <span style=color:#f92672>(</span>2716.95 per sec.<span style=color:#f92672>)</span>
+    ignored errors:                      <span style=color:#ae81ff>0</span>      <span style=color:#f92672>(</span>0.00 per sec.<span style=color:#f92672>)</span>
+    reconnects:                          <span style=color:#ae81ff>0</span>      <span style=color:#f92672>(</span>0.00 per sec.<span style=color:#f92672>)</span>
+
+General statistics:
+    total time:                          180.0236s
+    total number of events:              <span style=color:#ae81ff>30570</span>
+
+Latency <span style=color:#f92672>(</span>ms<span style=color:#f92672>)</span>:
+         min:                                    9.64
+         avg:                                   23.55
+         max:                                  189.01
+         95th percentile:                       35.59
+         sum:                               719855.01
+
+Threads fairness:
+    events <span style=color:#f92672>(</span>avg/stddev<span style=color:#f92672>)</span>:           7642.5000/293.55
+    execution time <span style=color:#f92672>(</span>avg/stddev<span style=color:#f92672>)</span>:   179.9638/0.00
+
+</code></pre></div><p>TPS, QPS나 응답 속도(latency) 관련한 통계치를 볼 수 있다.</p>
+<p>cleanup 로그를 보면 벤치마크에 사용한 테이블을 삭제한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k logs -f job/sysbench-oltp-read-only sysbench-cleanup
+sysbench 1.0.20 <span style=color:#f92672>(</span>using bundled LuaJIT 2.1.0-beta2<span style=color:#f92672>)</span>
+
+Dropping table <span style=color:#e6db74>&#39;sbtest1&#39;</span>...
+Dropping table <span style=color:#e6db74>&#39;sbtest2&#39;</span>...
+</code></pre></div><p><a href=https://blogs.oracle.com/mysql/post/mysql-operator-for-kubernetes-reaches-general-availability>MySQL Operator 는 GA 버전이 출시된지 얼마 안됐다.</a> 그래서인지 벤치마크 데이터를 만들다가도 오퍼레이터나 InnoDB Cluster 일부가 장애가 나고 회복 안되거나 쿠버네티스 API 응답과 불일치하는 경우도 있었다. 하지만 확실치 않은 것은, 앞서 말한듯, 실습한 환경의 노드가 최소 사양이기 때문에 쿠버네티스 클러스터 노드의 장애가 원인인지도 모르겠다(오퍼레이터나 InnoDB Cluster 파드 로그가 별 문제 없던 경우도 있어 이렇게 생각했다).</p>
+<p>먼저 노드 메트릭 수집과 모니터 방안을 마련하고, MySQL Operator 모니터 툴도 설치하여 문제를 파악해봐야겠다.</p>
+<h2 id=정리>정리</h2>
+<ul>
+<li>MySQL Operator/InnoDB Cluster 설치, 구조를 이해했다.</li>
+<li>Sysbench로 MySQL Operator로 설치한 InnoDB Cluster에서 벤치마크 해보았다.</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://blogs.oracle.com/mysql/post/mysql-operator-for-kubernetes-reaches-general-availability>https://blogs.oracle.com/mysql/post/mysql-operator-for-kubernetes-reaches-general-availability</a></li>
+<li><a href=https://dev.mysql.com/doc/mysql-operator/en/>https://dev.mysql.com/doc/mysql-operator/en/</a></li>
+<li><a href=https://hoing.io/archives/1867>https://hoing.io/archives/1867</a></li>
+<li><a href=https://github.com/akopytov/sysbench>https://github.com/akopytov/sysbench</a></li>
+<li><a href=https://kopf.readthedocs.io/en/stable/>https://kopf.readthedocs.io/en/stable/</a></li>
+<li><a href=https://kubernetes.io/docs/home/>https://kubernetes.io/docs/home/</a></li>
+<li><a href=https://stackoverflow.com/questions/40713573/how-to-run-containers-sequentially-as-a-kubernetes-job>https://stackoverflow.com/questions/40713573/how-to-run-containers-sequentially-as-a-kubernetes-job</a></li>
+<li><a href=https://tableplus.com/blog/2018/04/mysql-get-size-of-tables.html>https://tableplus.com/blog/2018/04/mysql-get-size-of-tables.html</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
