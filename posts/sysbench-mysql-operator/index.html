@@ -396,41 +396,7 @@ sysbench 1.0.20 <span style=color:#f92672>(</span>using bundled LuaJIT 2.1.0-bet
 Dropping table <span style=color:#e6db74>&#39;sbtest1&#39;</span>...
 Dropping table <span style=color:#e6db74>&#39;sbtest2&#39;</span>...
 </code></pre></div><p><a href=https://blogs.oracle.com/mysql/post/mysql-operator-for-kubernetes-reaches-general-availability>MySQL Operator 는 GA 버전이 출시된지 얼마 안됐다.</a> 그래서인지 벤치마크 데이터를 만들다가도 오퍼레이터나 InnoDB Cluster 일부가 장애가 나고 회복 안되거나 쿠버네티스 API 응답과 불일치하는 경우도 있었다. 하지만 확실치 않은 것은, 앞서 말한듯, 실습한 환경의 노드가 최소 사양이기 때문에 쿠버네티스 클러스터 노드의 장애가 원인인지도 모르겠다.</p>
-<p>오퍼레이터가 관리하는 워크로드 회수를 잘 못하는것 같아도 보인다. 오퍼레이터와 mysqld 인스턴스의 sidecar 로그에선 모두 정상 종료처럼 표시되는데, 오퍼레이터나 mysqld 인스턴스 파드의 쿠버네티스 상태는 Terminating 또는 Running이면서 강제로 삭제해도 hang인 경우가 꽤 자주 발생한다:</p>
-<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># Operator</span>
-$ k get -n mysql-operator po
-NAME                              READY   STATUS        RESTARTS   AGE
-mysql-operator-659ff68ccf-rqnvv   0/1     Terminating   <span style=color:#ae81ff>1</span>          8h
-
-$ k logs -n mysql-operator mysql-operator-659ff68ccf-rqnvv mysql-operator -f
-<span style=color:#f92672>(</span>...생략...<span style=color:#f92672>)</span>
-<span style=color:#f92672>[</span>2022-06-08 10:38:07,101<span style=color:#f92672>]</span> kopf.objects         <span style=color:#f92672>[</span>INFO    <span style=color:#f92672>]</span> Handler <span style=color:#e6db74>&#39;on_pod_delete&#39;</span> succeeded.
-<span style=color:#f92672>[</span>2022-06-08 10:38:07,101<span style=color:#f92672>]</span> kopf.objects         <span style=color:#f92672>[</span>INFO    <span style=color:#f92672>]</span> Deletion is processed: <span style=color:#ae81ff>1</span> succeeded; <span style=color:#ae81ff>0</span> failed.
-<span style=color:#f92672>[</span>2022-06-08 10:38:07,118<span style=color:#f92672>]</span> kopf.activities.clea <span style=color:#f92672>[</span>INFO    <span style=color:#f92672>]</span> Activity <span style=color:#e6db74>&#39;on_shutdown&#39;</span> succeeded.
-
-<span style=color:#75715e># Instances</span>
-$ k get -n mysql-cluster po
-NAME                                READY   STATUS        RESTARTS         AGE
-mycluster-0                         2/2     Running       <span style=color:#ae81ff>20</span> <span style=color:#f92672>(</span>5h43m ago<span style=color:#f92672>)</span>   6h39m
-mycluster-1                         2/2     Running       <span style=color:#ae81ff>0</span>                8h
-mycluster-2                         0/2     Terminating   <span style=color:#ae81ff>0</span>                8h
-mycluster-router-5f9758dc8f-889xg   1/1     Running       <span style=color:#ae81ff>15</span> <span style=color:#f92672>(</span>6h33m ago<span style=color:#f92672>)</span>   7h9m
-
-$ k logs -n mysql-cluster mycluster-0 sidecar -f
-<span style=color:#f92672>(</span>...생략...<span style=color:#f92672>)</span>
-<span style=color:#f92672>[</span>2022-06-08 11:08:28,968<span style=color:#f92672>]</span> kopf.reactor.running <span style=color:#f92672>[</span>INFO    <span style=color:#f92672>]</span> Signal SIGTERM is received. Operator is stopping.
-
-$ k logs -n mysql-cluster mycluster-router-5f9758dc8f-889xg -f
-<span style=color:#f92672>(</span>...생략...<span style=color:#f92672>)</span>
-2022-06-08 11:08:13 routing INFO <span style=color:#f92672>[</span>7fcab37fe700<span style=color:#f92672>]</span> Stop accepting connections <span style=color:#66d9ef>for</span> routing routing:bootstrap_x_rw listening on <span style=color:#ae81ff>6448</span>
-2022-06-08 11:08:13 routing INFO <span style=color:#f92672>[</span>7fcae0ff9700<span style=color:#f92672>]</span> Stop accepting connections <span style=color:#66d9ef>for</span> routing routing:bootstrap_rw listening on <span style=color:#ae81ff>6446</span>
-2022-06-08 11:08:13 routing INFO <span style=color:#f92672>[</span>7fcae17fa700<span style=color:#f92672>]</span> Stop accepting connections <span style=color:#66d9ef>for</span> routing routing:bootstrap_ro listening on <span style=color:#ae81ff>6447</span>
-2022-06-08 11:08:13 routing INFO <span style=color:#f92672>[</span>7fcab3fff700<span style=color:#f92672>]</span> Stop accepting connections <span style=color:#66d9ef>for</span> routing routing:bootstrap_x_ro listening on <span style=color:#ae81ff>6449</span>
-2022-06-08 11:08:13 routing INFO <span style=color:#f92672>[</span>7fcab37fe700<span style=color:#f92672>]</span> <span style=color:#f92672>[</span>routing:bootstrap_x_rw<span style=color:#f92672>]</span> stopped
-2022-06-08 11:08:13 routing INFO <span style=color:#f92672>[</span>7fcae17fa700<span style=color:#f92672>]</span> <span style=color:#f92672>[</span>routing:bootstrap_ro<span style=color:#f92672>]</span> stopped
-2022-06-08 11:08:13 routing INFO <span style=color:#f92672>[</span>7fcab3fff700<span style=color:#f92672>]</span> <span style=color:#f92672>[</span>routing:bootstrap_x_ro<span style=color:#f92672>]</span> stopped
-2022-06-08 11:08:13 routing INFO <span style=color:#f92672>[</span>7fcae0ff9700<span style=color:#f92672>]</span> <span style=color:#f92672>[</span>routing:bootstrap_rw<span style=color:#f92672>]</span> stopped
-</code></pre></div><p>먼저 노드 메트릭 수집과 모니터 방안을 마련하고, MySQL Operator 모니터 툴도 설치하여 문제를 파악해봐야겠다.</p>
+<p>먼저 노드 메트릭 수집과 모니터 방안을 마련하고, MySQL Operator 모니터 툴도 설치하여 문제를 파악해봐야겠다.</p>
 <h2 id=정리>정리</h2>
 <ul>
 <li>MySQL Operator/InnoDB Cluster 설치, 구조를 이해했다.</li>
