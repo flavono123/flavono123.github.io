@@ -1,0 +1,259 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>HPA | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>HPA</h2>
+<small class=date>Mon Jun 20, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/kubernetes class=tag>kubernetes</a>
+</div>
+</div>
+<div class=content><p>쿠버네티스에서 오토스케일은 크게 세가지가 있다. 클러스터 오토스케일러, 수직적 파드 오토스케일러(Vertical Pod Autoscaler; VPA) 그리고 수평적 파드 오토스케일러(Horizontal Pod Autoscaler)이다. 클러스터는 노드 수준 그리고 뒤의 두가지는 파드 수준의 오토스케일이다.</p>
+<p>클러스터 오토스케일러는 노드 개수를 스케일 아웃/인 한다. VPA는 파드에 할당되는 컴퓨팅 자원(CPU, 메모리의) 스케일 업/다운을 그리고 <strong>HPA는 파드 개수(replicas)의 스케일 아웃/인</strong> 한다(<a href=https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/horizontal-pod-autoscaler-v2/>HPA 관련한 쿠버네티스 문서엔 전부 스케일 업/다운이라는 표현을 쓰지만</a> 통상적인 의미의 스케일 아웃/인이라고 해석했다).</p>
+<p>클러스터 오토스케일러와 VPA는 쿠버네티스 API로 제공되지 않고 <a href=https://github.com/kubernetes/autoscaler>저장소</a>도 분리되어 있다. 이와 달리, 이번에 집중하여 볼 것인, HPA는 쿠버네티스 API로 제공되는 기능이다. <a href=https://kubernetes.io/ko/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/>이 태스크 문서</a>를 중심으로 살펴 볼 것이다. 그런데 외부 컴포넌트를 추가해야 된다던가 생소한 개념이 많다(개인적으론 문서도 쿠버네티스의 것 치곤 최신화나 설명이 부실하다고 느꼈다). 완전히 이해는 못했지만 허들을 다 넘기엔 러닝커브가 너무 큰거 같아서, 쭉 공부하려던 내용을 끊고 이해한 것을 우선 정리한다.</p>
+<h2 id=metrics-server-설치>Metrics server 설치</h2>
+<p><a href=https://github.com/kubernetes-sigs/metrics-server>Metrics server</a> 쿠버네티스 클러스터의 노드, 파드의 지표를 수집하고 오토스케일을 위해 이를 API로 제공하는 외부 컴포넌트이다. <a href=https://artifacthub.io/packages/helm/metrics-server/metrics-server>Helm chart</a>가 있다. 여담으로 이번에 Ansible <a href=https://docs.ansible.com/ansible/latest/collections/kubernetes/core/k8s_module.html>kuberenetes.core</a> 모듈의 존재를 알게 되어, 이걸 사용해 설치하고 <a href=https://github.com/flavono123/kubernetes-the-hard-way/commit/5a2c7a96241c310f075fb662fcbcdab901428b20>기존 command 태스크도 전부 바꾸었다</a>. 또 Ansible의 기본 멱등성 검사를 보완할 수 있는 <a href=https://github.com/databus23/helm-diff>helm-diff</a> Helm 플러그인도 설치해줬다.</p>
+<p>Metrcis server가 동작하기 위해선 각 노드 쿠블릿과 TLS로 통신해야한다. 이 <a href=https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/#kubelet-serving-certs>문서</a> 지시사항을 따르면 된다. <code>kube-system</code>의 <code>kubelet-config-&lt;major>.&lt;minor></code> 컨피그맵의 <code>kubelet</code> 키와 각 노드 쿠블릿 설정 파일(/var/lib/kubelet/config.yaml)에 <code>serverTLSBootstrap: true</code>를 추가한다. <a href=https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/_print/#workflow-when-using-kubeadm-join><code>kubeadm init</code> 시 부트스트랩 쿠블릿 설정(/etc/kubernetes/bootstrap-kubelet.conf)을 바꾸고 재시작 하는 방법</a>은 동작하지 않았다. 그래서 init, join 후 모든 쿠블릿 설정 파일을 직접 바꾼 후 재시작했다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml>  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Get the kubelet-config ConfigMaps</span>
+    <span style=color:#f92672>kubernetes.core.k8s_info</span>:
+      <span style=color:#f92672>kind</span>: <span style=color:#ae81ff>ConfigMap</span>
+      <span style=color:#f92672>name</span>: <span style=color:#ae81ff>kubelet-config-1.23</span>
+      <span style=color:#f92672>namespace</span>: <span style=color:#ae81ff>kube-system</span>
+    <span style=color:#f92672>register</span>: <span style=color:#ae81ff>configmap_result</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Patch serverTLSBootstrap to kubelet-config</span>
+    <span style=color:#f92672>kubernetes.core.k8s_json_patch</span>:
+      <span style=color:#f92672>kind</span>: <span style=color:#ae81ff>ConfigMap</span>
+      <span style=color:#f92672>namespace</span>: <span style=color:#ae81ff>kube-system</span>
+      <span style=color:#f92672>name</span>: <span style=color:#ae81ff>kubelet-config-1.23</span>
+      <span style=color:#f92672>patch</span>:
+      - <span style=color:#f92672>op</span>: <span style=color:#ae81ff>replace</span>
+        <span style=color:#f92672>path</span>: <span style=color:#ae81ff>/data/kubelet</span>
+        <span style=color:#f92672>value</span>: <span style=color:#e6db74>&#34;{{ configmap_result.resources[0].data.kubelet | from_yaml | combine({&#39;serverTLSBoostrap&#39;: true }) | to_yaml }}&#34;</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Get current kubelet config</span>
+    <span style=color:#f92672>shell</span>: <span style=color:#ae81ff>cat /var/lib/kubelet/config.yaml</span>
+    <span style=color:#f92672>register</span>: <span style=color:#ae81ff>kubelet_config</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Add serverTLSBootstrap to kubelet config</span>
+    <span style=color:#f92672>set_fact</span>:
+      <span style=color:#f92672>kubelet_config</span>: <span style=color:#e6db74>&#34;{{ kubelet_config.stdout | from_yaml | combine({&#39;serverTLSBootstrap&#39;: true}) | to_yaml(indent=2, width=1337) }}&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Copy new kubelet config</span>
+    <span style=color:#f92672>copy</span>:
+      <span style=color:#f92672>content</span>: <span style=color:#e6db74>&#34;{{ kubelet_config }}&#34;</span>
+      <span style=color:#f92672>dest</span>: <span style=color:#ae81ff>/var/lib/kubelet/config.yaml</span>
+      <span style=color:#f92672>mode</span>: <span style=color:#e6db74>&#34;0644&#34;</span>
+      <span style=color:#f92672>owner</span>: <span style=color:#ae81ff>root</span>
+      <span style=color:#f92672>group</span>: <span style=color:#ae81ff>root</span>
+    <span style=color:#f92672>notify</span>: <span style=color:#ae81ff>restart kubelet</span>
+
+</code></pre></div><p>YAML 다루는 기술은 늘었지만 코드 가독성이 좋아보이진 않는다. 이렇게 설정만 바꾸면 CSR이 자동으로 생성되고 승인하면 쿠블릿 포트인 10250에 대해 TLS 통신이 가능해진다. 이 때 만드는 CSR(singer는 <code>kubernetes.io/kubelet-serving</code>이고 requestor는 노드 <code>system:node:&lt;hostname></code>)은 <a href=https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/#kubernetes-signers>컨트롤러 매니저에 의해 절대 자동 승인 되지 않는다고 한다</a>.</p>
+<p>따라서 이런 종류의 인증서 rotation을 위한 <a href=https://github.com/postfinance/kubelet-csr-approver>서드 파티</a>도 추천해주는데, 오버킬이라 생각하여 Ansible 모듈을 사용해서 CSR을 승인했다. 모듈에 <code>certificate approve</code>에 해당하는 것이 없어 command로 했다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml>  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Get CSRs</span>
+    <span style=color:#f92672>kubernetes.core.k8s_info</span>:
+      <span style=color:#f92672>kind</span>: <span style=color:#ae81ff>CertificateSigningRequest</span>
+      <span style=color:#f92672>api_version</span>: <span style=color:#ae81ff>certificates.k8s.io/v1</span>
+      <span style=color:#f92672>field_selectors</span>: <span style=color:#ae81ff>spec.signerName=kubernetes.io/kubelet-serving</span>
+    <span style=color:#f92672>register</span>: <span style=color:#ae81ff>csr_result</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Show CSRs</span>
+    <span style=color:#f92672>debug</span>:
+      <span style=color:#f92672>msg</span>: <span style=color:#e6db74>&#34;{{ csr_result.resources | map(attribute=&#39;metadata.name&#39;) | list }}&#34;</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+
+  - <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Approve CSRs</span>
+    <span style=color:#f92672>command</span>: <span style=color:#e6db74>&#34;kubectl certificate approve {{ item }}&#34;</span>
+    <span style=color:#f92672>with_items</span>: <span style=color:#e6db74>&#34;{{ csr_result.resources | map(attribute=&#39;metadata.name&#39;) | list }}&#34;</span>
+    <span style=color:#f92672>when</span>: <span style=color:#e6db74>&#34;&#39;controlplane&#39; in group_names&#34;</span>
+</code></pre></div><p>이 작업은 metrics server Helm 차트 설치 이후에 해주어도 된다. 그러면 readiness가 0/1이었던 metrics server 파드가 정상으로 바뀔 것이다.</p>
+<p>이제 Metrics server에 API 요청을 해볼 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k get --raw /apis/metrics.k8s.io/v1beta1 | jq
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;kind&#34;</span>: <span style=color:#e6db74>&#34;APIResourceList&#34;</span>,
+  <span style=color:#e6db74>&#34;apiVersion&#34;</span>: <span style=color:#e6db74>&#34;v1&#34;</span>,
+  <span style=color:#e6db74>&#34;groupVersion&#34;</span>: <span style=color:#e6db74>&#34;metrics.k8s.io/v1beta1&#34;</span>,
+  <span style=color:#e6db74>&#34;resources&#34;</span>: <span style=color:#f92672>[</span>
+    <span style=color:#f92672>{</span>
+      <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;nodes&#34;</span>,
+      <span style=color:#e6db74>&#34;singularName&#34;</span>: <span style=color:#e6db74>&#34;&#34;</span>,
+      <span style=color:#e6db74>&#34;namespaced&#34;</span>: false,
+      <span style=color:#e6db74>&#34;kind&#34;</span>: <span style=color:#e6db74>&#34;NodeMetrics&#34;</span>,
+      <span style=color:#e6db74>&#34;verbs&#34;</span>: <span style=color:#f92672>[</span>
+        <span style=color:#e6db74>&#34;get&#34;</span>,
+        <span style=color:#e6db74>&#34;list&#34;</span>
+      <span style=color:#f92672>]</span>
+    <span style=color:#f92672>}</span>,
+    <span style=color:#f92672>{</span>
+      <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;pods&#34;</span>,
+      <span style=color:#e6db74>&#34;singularName&#34;</span>: <span style=color:#e6db74>&#34;&#34;</span>,
+      <span style=color:#e6db74>&#34;namespaced&#34;</span>: true,
+      <span style=color:#e6db74>&#34;kind&#34;</span>: <span style=color:#e6db74>&#34;PodMetrics&#34;</span>,
+      <span style=color:#e6db74>&#34;verbs&#34;</span>: <span style=color:#f92672>[</span>
+        <span style=color:#e6db74>&#34;get&#34;</span>,
+        <span style=color:#e6db74>&#34;list&#34;</span>
+      <span style=color:#f92672>]</span>
+    <span style=color:#f92672>}</span>
+  <span style=color:#f92672>]</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><h2 id=hpa>HPA</h2>
+<p>HPA가 지표 기반으로 파드 수를 조정하는 공식의 간단한 버전은 다음과 같다:</p>
+<blockquote>
+<p>X = N * c/t</p>
+</blockquote>
+<ul>
+<li>N - 현재 파드 개수</li>
+<li>c - 현재 지표 값</li>
+<li>t - 목표 지표 값</li>
+<li>X - 조정될(desired) 파드 개수</li>
+</ul>
+<p>실습의 예시로 설명해보면, 목표 지표 값이 파드당 CPU 사용 백분율(<code>targetCPUUtilizationPercentage</code>) 50%일 때, 측정되는 지표 값이 300%라면 파드 개수는 현재의 여섯배로 조정될 것이다(300/50 * 1 = 6).</p>
+<p>개념이 아주 간단하고 실습도 크게 어려운 내용이 없어 명령을 그대로 따라하면 결과를 볼 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># HPA 적용할 디플로이먼트 생성, 서비스 노출</span>
+$ k apply -f https://k8s.io/examples/application/php-apache.yaml
+deployment.apps/php-apache created
+service/php-apache created
+
+<span style=color:#75715e># HPA 생성</span>
+$ k autoscale deployment php-apache --cpu-percent<span style=color:#f92672>=</span><span style=color:#ae81ff>50</span> --min<span style=color:#f92672>=</span><span style=color:#ae81ff>1</span> --max<span style=color:#f92672>=</span><span style=color:#ae81ff>10</span>
+horizontalpodautoscaler.autoscaling/php-apache autoscaled
+
+<span style=color:#75715e># 초반엔 목표 지표 값이 &lt;unknown&gt;으로 나올 수 있다</span>
+$  k get hpa
+NAME         REFERENCE               TARGETS   MINPODS   MAXPODS   REPLICAS   AGE
+php-apache   Deployment/php-apache   0%/50%    <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>10</span>        <span style=color:#ae81ff>1</span>          94s
+
+<span style=color:#75715e># 부하 생성</span>
+$ k run -i --tty load-generator --rm --image<span style=color:#f92672>=</span>busybox --restart<span style=color:#f92672>=</span>Never -- /bin/sh -c <span style=color:#e6db74>&#34;while sleep 0.01; d do wget -q -O- http://php-apache; done&#34;</span>
+
+
+<span style=color:#75715e># 모니터</span>
+<span style=color:#75715e>## HPA</span>
+$ watch <span style=color:#e6db74>&#39;kubectl get hpa&#39;</span>
+
+<span style=color:#75715e>## 파드</span>
+$ watch <span style=color:#e6db74>&#39;kubectl get po&#39;</span>
+
+</code></pre></div><p>부하가 증가하여 HPA의 현재 지표 값이 올라가면 파드가 늘어나는 것을 확인할 수 있다. 문서 설명처럼 7개 파드에선 CPU 사용률이 50% 미만으로 유지되어 더 이상 증가하지 않았다. 부하 생성하는 파드를 종료하여 지표 값이 낮아지면 파드 개수가 다시 1개로 줄어든다.</p>
+<h2 id=v1-vs-v2>v1 vs. v2</h2>
+<p>여기까진 문서를 보고 실습 따라함에 큰 무리가 없다. 그런데 HPA spec의 targetCPUUtilizationPercentage가 metrics로 바뀌었다는 뜬금 없는 소리를 한다. 무슨 이야긴가 싶었는데, HPA API 버전이 변경된 것을 말하는 것이었다. <a href=https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/>API 참고 문서 워크로드 리소스 쪽에 가면 HorizontalPodAutoscaler는 두개가 있다</a>(v2beta2는 제외했다). 각각 autoscaling/v1, autoscaling/v2로 그룹이 다르다.</p>
+<p><a href=https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/horizontal-pod-autoscaler-v1/>autoscaling/v1</a>에선 spec에 설정할 수 있는 지표로 <code>targetCPUUtilizationPercentage</code>, 평균 CPU 사용율, 만 쓸 수 있었다. <a href=https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#autoscale>autoscale</a> 서브 명령도 이에 맞는 옵션만 있는걸로 보인다.</p>
+<p><a href=https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/horizontal-pod-autoscaler-v2/>autoscaling/v2</a>는 더 많은 동작에 대한 정의(<code>behavior</code>)와 지표(<code>metrics</code>)를 설정할 수 있다(<a href=https://github.com/kubernetes/design-proposals-archive/blob/main/autoscaling/hpa-v2.md>과거 제안서</a>). 여기서 실습한 지표는 <code>Resource</code> 타입의 <code>cpu</code>이다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k get hpa php-apache -oyaml | yq .spec.metrics<span style=color:#f92672>[</span>0<span style=color:#f92672>]</span>
+resource:
+  name: cpu
+  target:
+    averageUtilization: <span style=color:#ae81ff>50</span>
+    type: Utilization
+type: Resource
+</code></pre></div><p>Metrics server를 설치하여 얻을 수 있는 지표는 <code>Resource</code> 타입의 <code>cpu</code>와 <code>memory</code>가 전부이다. 다른 커스텀 타입을 정의하거나 확장하기 위해선 metrics server가 아닌 다른 컴포넌트가 필요하다.</p>
+<h2 id=kube-prometheus-stack과-prometheus-adapter>kube-prometheus-stack과 Prometheus adapter</h2>
+<p>문서에선 파드 타입 그리고 오브젝트 타입 지표를 HPA에 정의하는 예시를 보여주지만, 이 지표를 어떻게 생성할지에 대해선 나와 있지 않다.한가지 많이 사용하는 방법은 프로메테우스를 이용하는 것이다. 앱 코드에서 프로메테우스로 지표를 측정 수집하고 이를 <a href=https://github.com/kubernetes-sigs/prometheus-adapter>Prometheus adapter</a>로 쿠버네티스 메트릭 API에 통합하면 HPA는 메트릭 API를 통해 커스텀 지표를 얻을 수 있다.</p>
+<p>문서에 이러한 방법이 공식적이다라고 쓰여 있진 않지만, 쿠버네티스 커스텀 지표의 de facto standard 같아 보인다. 저장소 소속이 쿠버네티스 분과회 아래이고, PromQL이 프로메테우스가 아닌 다른 텔레메트리 생태계에서도 호환되기 때문에, 나중엔 쿠버네티스 안으로 들어올지도 모르겠단 생각이 든다. 하지만 예제 앱을 만들어 프로메테우스 메트릭을 측정하고 PromQL을 사용해 수집하는 것은, 러닝커브가 있어, 이번 포스팅에선 생략한다.</p>
+<p><a href=https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack>kube-prometheus-stack</a>이란 Helm 차트는 프로메테우스와 그라파나, alertmanager, exporter, KSM 등 프로메테우스 스택에 필요한 컴포넌트를 설치하고 쿠버네티스에서 운영하기 위한 오퍼레이터도 설치한다. prometheus-adapter도 같이 설치해준다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k get all -n prometheus
+NAME                                                         READY   STATUS    RESTARTS   AGE
+pod/alertmanager-prometheus-kube-prometheus-alertmanager-0   2/2     Running   <span style=color:#ae81ff>0</span>          5m47s
+pod/prometheus-adapter-786d75df96-lcccl                      1/1     Running   <span style=color:#ae81ff>0</span>          4m30s
+pod/prometheus-grafana-cdb9d9755-225kb                       3/3     Running   <span style=color:#ae81ff>0</span>          5m59s
+pod/prometheus-kube-prometheus-operator-6589cd9b75-4jsts     1/1     Running   <span style=color:#ae81ff>0</span>          5m59s
+pod/prometheus-kube-state-metrics-54c585df74-8n6l6           1/1     Running   <span style=color:#ae81ff>0</span>          5m59s
+pod/prometheus-prometheus-kube-prometheus-prometheus-0       2/2     Running   <span style=color:#ae81ff>0</span>          5m39s
+pod/prometheus-prometheus-node-exporter-kgqhr                1/1     Running   <span style=color:#ae81ff>0</span>          5m58s
+pod/prometheus-prometheus-node-exporter-knncz                1/1     Running   <span style=color:#ae81ff>0</span>          5m59s
+pod/prometheus-prometheus-node-exporter-tgqjz                1/1     Running   <span style=color:#ae81ff>0</span>          5m59s
+pod/prometheus-prometheus-node-exporter-vqt9m                1/1     Running   <span style=color:#ae81ff>0</span>          5m59s
+
+NAME                                              TYPE        CLUSTER-IP       EXTERNAL-IP   PORT<span style=color:#f92672>(</span>S<span style=color:#f92672>)</span>                      AGE
+service/alertmanager-operated                     ClusterIP   None             &lt;none&gt;        9093/TCP,9094/TCP,9094/UDP   5m48s
+service/prometheus-adapter                        ClusterIP   10.105.238.0     &lt;none&gt;        443/TCP                      4m31s
+service/prometheus-grafana                        ClusterIP   10.103.74.2      &lt;none&gt;        80/TCP                       5m59s
+service/prometheus-kube-prometheus-alertmanager   ClusterIP   10.109.182.18    &lt;none&gt;        9093/TCP                     5m59s
+service/prometheus-kube-prometheus-operator       ClusterIP   10.110.217.60    &lt;none&gt;        443/TCP                      5m59s
+service/prometheus-kube-prometheus-prometheus     NodePort    10.106.237.46    &lt;none&gt;        9090:30090/TCP               5m59s
+service/prometheus-kube-state-metrics             ClusterIP   10.104.230.54    &lt;none&gt;        8080/TCP                     5m59s
+service/prometheus-operated                       ClusterIP   None             &lt;none&gt;        9090/TCP                     5m41s
+service/prometheus-prometheus-node-exporter       ClusterIP   10.102.152.252   &lt;none&gt;        9100/TCP                     5m59s
+
+NAME                                                 DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+daemonset.apps/prometheus-prometheus-node-exporter   <span style=color:#ae81ff>4</span>         <span style=color:#ae81ff>4</span>         <span style=color:#ae81ff>4</span>       <span style=color:#ae81ff>4</span>            <span style=color:#ae81ff>4</span>           &lt;none&gt;          5m59s
+
+NAME                                                  READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/prometheus-adapter                    1/1     <span style=color:#ae81ff>1</span>            <span style=color:#ae81ff>1</span>           4m31s
+deployment.apps/prometheus-grafana                    1/1     <span style=color:#ae81ff>1</span>            <span style=color:#ae81ff>1</span>           5m59s
+deployment.apps/prometheus-kube-prometheus-operator   1/1     <span style=color:#ae81ff>1</span>            <span style=color:#ae81ff>1</span>           5m59s
+deployment.apps/prometheus-kube-state-metrics         1/1     <span style=color:#ae81ff>1</span>            <span style=color:#ae81ff>1</span>           5m59s
+
+NAME                                                             DESIRED   CURRENT   READY   AGE
+replicaset.apps/prometheus-adapter-786d75df96                    <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>       4m30s
+replicaset.apps/prometheus-grafana-cdb9d9755                     <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>       5m59s
+replicaset.apps/prometheus-kube-prometheus-operator-6589cd9b75   <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>       5m59s
+replicaset.apps/prometheus-kube-state-metrics-54c585df74         <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>         <span style=color:#ae81ff>1</span>       5m59s
+
+NAME                                                                    READY   AGE
+statefulset.apps/alertmanager-prometheus-kube-prometheus-alertmanager   1/1     5m48s
+statefulset.apps/prometheus-prometheus-kube-prometheus-prometheus       1/1     5m41s
+</code></pre></div><p>prometheus-adapter 설치 시엔 kube-prometheus-stack으로 설치한 프로메테우스 서비스가 노출되도록 <code>prometheus.service.url</code> values 값을 준다(<code>http://&lt;prometheus-svc>.&lt;ns></code>).</p>
+<p>따로 커스텀 지표 정의 없이 설치만 해도 엄청 많은 커스텀 지표가 수집된다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k get --raw /apis/custom.metrics.k8s.io/v1beta1 | jq <span style=color:#e6db74>&#39;.resources | length&#39;</span>
+<span style=color:#ae81ff>4560</span>
+
+$ k get --raw /apis/custom.metrics.k8s.io/v1beta1 | jq -r <span style=color:#e6db74>&#39;.resources&#39;</span> | grep pods | tail -10
+    <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;pods/alertmanager_silences_query_errors&#34;</span>,
+    <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;pods/prometheus_target_scrapes_exceeded_body_size_limit&#34;</span>,
+    <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;pods/node_disk_reads_completed&#34;</span>,
+    <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;pods/coredns_forward_request_duration_seconds_bucket&#34;</span>,
+    <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;pods/prometheus_tsdb_compaction_chunk_range_seconds_sum&#34;</span>,
+    <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;pods/prometheus_target_sync_length_seconds_count&#34;</span>,
+    <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;pods/kube_poddisruptionbudget_created&#34;</span>,
+    <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;pods/prometheus_target_scrape_pools_failed&#34;</span>,
+    <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;pods/kube_pod_status_ready&#34;</span>,
+    <span style=color:#e6db74>&#34;name&#34;</span>: <span style=color:#e6db74>&#34;pods/kube_pod_status_scheduled_time&#34;</span>,
+</code></pre></div><p>HPA에 사용할만한 지표가 있나 보려 했지만 실패했다. kube_ 로 시작하는 <a href=https://github.com/kubernetes/kube-state-metrics>KSM</a>들도 보인다.</p>
+<h2 id=정리>정리</h2>
+<ul>
+<li>쿠버네티스 오토스케일러는 크게 세가지이다.
+<ul>
+<li>클러스터 오토스케일러</li>
+<li>VPA</li>
+<li>HPA</li>
+</ul>
+</li>
+<li>Metrics server를 사용하기 위해 각 노드 쿠블릿과 API 서버가 TLS 연결이 되어야 한다.</li>
+<li>Metrics server에서 기본으로 제공되는 Resource 타입의 지표는 cpu, memory 두 가지이다.</li>
+<li>커스텀 지표를 정의, 수집하고 Prometheus adapter에서 메트릭 API와 통합하여 HPA에서 사용할 수 있다.</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://kubernetes.io/ko/docs/home/>https://kubernetes.io/ko/docs/home/</a></li>
+<li><a href=https://medium.com/@tkdgy0801/eks-autoscaling-%ED%95%98%EA%B8%B0-part-1-horizontal-pod-autoscaler-with-custom-metrics-2274566463f9>https://medium.com/@tkdgy0801/eks-autoscaling-%ED%95%98%EA%B8%B0-part-1-horizontal-pod-autoscaler-with-custom-metrics-2274566463f9</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
