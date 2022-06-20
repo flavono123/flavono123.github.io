@@ -1,0 +1,146 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Yq 중첩 키 경로 파악하기(긴 Helm 차트 values 파악하기) | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>Yq 중첩 키 경로 파악하기(긴 Helm 차트 values 파악하기)</h2>
+<small class=date>Mon Jun 20, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/yq class=tag>yq</a>
+<a href=https://flavono123.github.io/tags/kubernetes class=tag>kubernetes</a>
+</div>
+</div>
+<div class=content><p>Yq의 <a href=https://mikefarah.gitbook.io/yq/operators/recursive-descent-glob>globbing</a>과 내장 연산자 몇가지를 사용하면 중첩된 객체에서 특정 키 경로를 알아낼 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ cat test.yaml
+a:
+  b:
+    target: HERE
+
+❯ yq e <span style=color:#e6db74>&#39; .. | select(has(&#34;target&#34;)) | path&#39;</span> test.yaml
+- a
+- b
+</code></pre></div><p>실전으론, 아주 긴 쿠버네티스 매니페스트나 Helm values를 파악할 때 사용할 수 있다. 하지만 내가 쓰는 방법이 완전한 해결책이라는 생각이 들진 않는데&mldr; 일단 지금 쓰는 방식을 이야기 해본다.</p>
+<p>한 예로 <a href=https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack>kube-prometheus-stack</a>의 values는 아주 길다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ helm show values prometheus-community/kube-prometheus-stack --version 36.0.2 | <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  wc -l
+<span style=color:#ae81ff>2856</span>
+</code></pre></div><h2 id=grepping>Grepping</h2>
+<p>문제 상황은 tolerations을 적용할 수 있는 곳을 모두 알고 싶다 이다. 우선은 grep 한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ helm show values prometheus-community/kube-prometheus-stack --version 36.0.2 | <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  grep tolerations
+    <span style=color:#75715e>## If specified, the pod&#39;s tolerations.</span>
+    tolerations: <span style=color:#f92672>[]</span>
+      tolerations: <span style=color:#f92672>[]</span>
+  tolerations: <span style=color:#f92672>[]</span>
+    tolerations: <span style=color:#f92672>[]</span>
+</code></pre></div><p>인덴트를 보면 최상위 수준에 있지 않다는 것은 알 수 있다. Stack이란 이름처럼 여러 컴포넌트가 있는만큼 각 컴포넌트 매니페스트의 values가 분기되어 있을 것 같다.</p>
+<h2 id=주석-제거>주석 제거</h2>
+<p>결과 중엔 주석도 볼 수 있다. 특히 Helm values는 예시나 문서를 주석을 쓰는 경우가 많다. 결과가 복잡하니 <a href=https://mikefarah.gitbook.io/yq/operators/comment-operators#remove-comment>주석을 지우자</a>:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ helm show values prometheus-community/kube-prometheus-stack --version 36.0.2 | <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  yq e <span style=color:#e6db74>&#39;... comments=&#34;&#34;&#39;</span> | wc -l
+<span style=color:#ae81ff>734</span>
+
+$ helm show values prometheus-community/kube-prometheus-stack --version 36.0.2 | <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  yq e <span style=color:#e6db74>&#39;... comments=&#34;&#34;&#39;</span> | grep tolerations
+    tolerations: <span style=color:#f92672>[]</span>
+      tolerations: <span style=color:#f92672>[]</span>
+  tolerations: <span style=color:#f92672>[]</span>
+    tolerations: <span style=color:#f92672>[]</span>
+</code></pre></div><p>YAML 코드보다 주석이 더 많았다.</p>
+<h2 id=top-keys>Top keys</h2>
+<p>이 경우엔 values의 최상위 키 중 각 stack의 컴포넌트라가 있다는 기반 지식이 있다(global처럼 아닌 것도 있다). 어떤 컴포넌트가 tolerations 키를 갖고 있는지 보자:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ helm show values prometheus-community/kube-prometheus-stack --version 36.0.2 | <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  yq e <span style=color:#e6db74>&#39;... comments=&#34;&#34; | keys&#39;</span>
+- nameOverride
+- namespaceOverride
+- kubeTargetVersionOverride
+- kubeVersionOverride
+- fullnameOverride
+- commonLabels
+- defaultRules
+- additionalPrometheusRulesMap
+- global
+- alertmanager
+- grafana
+- kubeApiServer
+- kubelet
+- kubeControllerManager
+- coreDns
+- kubeDns
+- kubeEtcd
+- kubeScheduler
+- kubeProxy
+- kubeStateMetrics
+- kube-state-metrics
+- nodeExporter
+- prometheus-node-exporter
+- prometheusOperator
+- prometheus
+
+$ helm show values prometheus-community/kube-prometheus-stack --version 36.0.2 | yq e <span style=color:#e6db74>&#39;... comments=&#34;&#34; | with_entries(select( .. | has(&#34;tolerations&#34;))) | keys&#39;</span>
+- alertmanager
+- prometheusOperator
+- prometheus
+</code></pre></div><p>Grep 결과는 4개였지만, 최상위 키로 필터하면 세개이다. 어떤 tolerations는 최상위 키 기준으로 같은 노드에 있음을 알 수 있다.</p>
+<h2 id=path>Path</h2>
+<p>이 정도 파악하고 <a href=https://mikefarah.gitbook.io/yq/operators/path>path 연산자</a>를 사용하면 중첩키의 경로가 보일 것이다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ helm show values prometheus-community/kube-prometheus-stack --version 36.0.2 | <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  yq e <span style=color:#e6db74>&#39;... comments=&#34;&#34; |  .. | select(has(&#34;tolerations&#34;)) | path&#39;</span>
+- alertmanager
+- alertmanagerSpec      <span style=color:#75715e># 1 .alertmanager.alertmanagerSpec.tolerations</span>
+- prometheusOperator    <span style=color:#75715e># 2 .prometheusOperator.tolerations</span>
+- prometheusOperator
+- admissionWebhooks
+- patch                 <span style=color:#75715e># 3 .prometheusOperator.admissionWebhooks.patch.tolerations</span>
+- prometheus
+- prometheusSpec        <span style=color:#75715e># 4 .prometheus.prometheusSpec.tolerations</span>
+</code></pre></div><p>결과의 주석은 설명을 위해 내가 추가한 것이다. Top keys를 살펴 봤을 때 prometheusOperator 아래에 두 개의 tolerations 키를 포함한 노드가 있다는 것을 알 수 있다. 따라서 네개의 tolerations까지의 경로를 알 수 있게 됐다.</p>
+<h2 id=뭔가-부족>뭔가 부족?</h2>
+<p>문제를 프로그래매틱한 방법으로 일반화하여 푼 것 같지만, 사실 다른 yq 연산자로 많이 시도하고 결국엔 valuse YAML을 눈으로 직접 보면서 tolerations 경로를 맞게 찾은건가? 검증했다.</p>
+<p>위 결과에서 주석을 빼면 알아보기 쉽지도 않다. 나온 네개의 노드 각각에 대해 path 연산을 하고 싶은데, 배열로 묶으면 새로운 객체가 되어 노드의 경로 정보가 사라져버린다&mldr;:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ helm show values prometheus-community/kube-prometheus-stack --version 36.0.2 | <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  yq e <span style=color:#e6db74>&#39;... comments=&#34;&#34; |  [ .. | select(has(&#34;tolerations&#34;)) ] | path&#39;</span>
+<span style=color:#f92672>[]</span>
+
+
+$ helm show values prometheus-community/kube-prometheus-stack --version 36.0.2 | <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  yq e <span style=color:#e6db74>&#39;... comments=&#34;&#34; |  [ .. | select(has(&#34;tolerations&#34;)) ][] | path&#39;</span>
+- <span style=color:#ae81ff>0</span>
+- <span style=color:#ae81ff>1</span>
+- <span style=color:#ae81ff>2</span>
+- <span style=color:#ae81ff>3</span>
+
+$ helm show values prometheus-community/kube-prometheus-stack --version 36.0.2 | <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  yq e <span style=color:#e6db74>&#39;... comments=&#34;&#34; |  [ .. | select(has(&#34;tolerations&#34;)) ][0] | path&#39;</span>
+- <span style=color:#ae81ff>0</span>
+</code></pre></div><p>한끝차이로 일반적인 방법으로서의 완성도를 못 만들고 있는거 같은데&mldr; 잘 모르겠다.</p>
+<p>아니면 역시 눈으로 확인하는 법이 빠를 수도 있다. <a href=https://github.com/wagoodman/dive>dive</a> 처럼 노드 트리를 접고 펼치면서, 검색 기능이 있는 TUI 앱을 만들어야 할까?(있지 않을까?). Helm values를 찾기 위해 만든다면 엄청난 오버킬이겠지만, dive 비슷한 앱을 만들어 보고 싶긴 하다.</p>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://mikefarah.gitbook.io/yq/>https://mikefarah.gitbook.io/yq/</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
