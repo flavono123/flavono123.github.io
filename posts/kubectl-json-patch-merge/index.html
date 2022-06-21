@@ -1,0 +1,122 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Kubectl Patch | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>Kubectl Patch</h2>
+<small class=date>Tue Jun 21, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/kubernetes class=tag>kubernetes</a>
+<a href=https://flavono123.github.io/tags/json class=tag>json</a>
+</div>
+</div>
+<div class=content><h2 id=json-patch>JSON Patch</h2>
+<p><a href=https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#patch>kubectl patch</a> 서브명령은 바꿀 JSON을 인자로 실행 중인 객체의 정의를 바꾼다. <a href=https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#edit>edit</a> 보다 편하기도, 또 누군가에게 설명하기 쉬운 경우도 많다.</p>
+<p>하지만 인라인으로 쓰인 patch 인자가 복잡해 보일 때도 있다. 이때 보다 나은, <a href=https://datatracker.ietf.org/doc/html/rfc6902>JSON Patch</a>를 사용할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k run patch-test --image busybox -- sleep 1d
+pod/patch-test created
+
+<span style=color:#75715e># k label po patch-test test=true 와 같다</span>
+$ k patch po patch-test --type json <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  -p <span style=color:#e6db74>&#39;[{&#34;op&#34;: &#34;add&#34;, &#34;path&#34;: &#34;/metadata/labels/test&#34;, &#34;value&#34;: &#34;true&#34;}]&#39;</span>
+pod/patch-test patched
+
+$ k get po -l test<span style=color:#f92672>=</span>true
+NAME         READY   STATUS    RESTARTS   AGE
+patch-test   1/1     Running   <span style=color:#ae81ff>0</span>          108s
+
+</code></pre></div><p>Patch할 JSON에 여러 변경사항(연산)을 인자로 쓸 수 있지만, 하날 쓰더라도 <strong>무조건 배열에 담아 보내야 하는 것</strong>을 주의하자. Add 외에 몇가지 연산자가 더 있다. 이걸 JSON을 그대로 보내는, patch의 기본 전략을 사용하면, 인자 JSON이 꽤 복잡해보인다. 어디를 어떻게 고치는지 잘 보이지 않는다. 예시는 간단해서 이 정도면 파악이 어렵진 않지만&mldr; 불필요한 따옴표와 중괄호가 너무 많다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k patch po patch-test -p <span style=color:#e6db74>&#39;{&#34;metadata&#34;: {&#34;labels&#34;: {&#34;test&#34;: &#34;false&#34;}}}&#39;</span>
+pod/patch-test patched
+</code></pre></div><p>연산자와 키 경로라는 명령 스키마가 있다는 것이 하려는 동작을 보다 명확하게 보여준다. Ansible에서도 그렇다. 전자는 <a href=https://docs.ansible.com/ansible/latest/collections/kubernetes/core/k8s_json_patch_module.html#ansible-collections-kubernetes-core-k8s-json-patch-module>kubernetes.core.k8s_json_patch</a>라는 분리된 모듈에 있고, 후자는 kubernetes.core.k8s 모듈에 <a href=https://docs.ansible.com/ansible/latest/collections/kubernetes/core/k8s_module.html#parameter-state>state 값이 patched</a>일 때 <code>definition</code>을 인자 JSON으로 patch 동작을 한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=color:#75715e># JSON Patch</span>
+- <span style=color:#f92672>kubernetes.core.k8s_json_patch</span>:
+    <span style=color:#f92672>kind</span>: <span style=color:#ae81ff>Pod</span>
+    <span style=color:#f92672>name</span>: <span style=color:#ae81ff>patch-test</span>
+    <span style=color:#f92672>patch</span>:
+    - <span style=color:#f92672>op</span>: <span style=color:#ae81ff>add</span>
+      <span style=color:#f92672>path</span>: <span style=color:#ae81ff>/metadata/labels/test</span>
+      <span style=color:#f92672>value</span>: <span style=color:#e6db74>&#34;true&#34;</span>
+
+<span style=color:#75715e># JSON Merge patch</span>
+- <span style=color:#f92672>kubernetes.core.k8s</span>:
+    <span style=color:#f92672>state</span>: <span style=color:#ae81ff>patched</span>
+    <span style=color:#f92672>kind</span>: <span style=color:#ae81ff>Pod</span>
+    <span style=color:#f92672>name</span>: <span style=color:#ae81ff>patch-test</span>
+    <span style=color:#f92672>definition</span>:
+      <span style=color:#f92672>metadata</span>:
+        <span style=color:#f92672>labels</span>:
+          <span style=color:#f92672>test</span>: <span style=color:#e6db74>&#34;true&#34;</span>
+</code></pre></div><p>JSON Patch를 보면, 키 이름에 역 슬래시('/')가 들어간 경우 처리할 방법이 있어야 한다. 실제로 레이블이나 어노테이션 키엔 역 슬래시가 많이 들어간다. <a href=https://datatracker.ietf.org/doc/html/rfc6902#appendix-A.14>JSON Patch path 에선 &lsquo;/&rsquo; 를 &lsquo;~1&rsquo;로, &lsquo;~&lsquo;를 &lsquo;~0&rsquo;로 처리</a>한다. 다시 말하면 다음처럼 매핑한다:</p>
+<ul>
+<li><code>~</code> - <code>~0</code></li>
+<li><code>/</code> - <code>~1</code></li>
+</ul>
+<p>다음은 <code>.metadata.annotations.storageclass.kubernetes.io/is-default-class</code> 키를 수정하는 예제이다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml>- <span style=color:#f92672>kubernetes.core.k8s_json_patch</span>:
+    <span style=color:#f92672>kind</span>: <span style=color:#ae81ff>StorageClass</span>
+    <span style=color:#f92672>name</span>: <span style=color:#ae81ff>local-path</span>
+    <span style=color:#f92672>patch</span>:
+    - <span style=color:#f92672>op</span>: <span style=color:#ae81ff>replace</span>
+      <span style=color:#f92672>path</span>: <span style=color:#ae81ff>/metadata/annotations/storageclass.kubernetes.io~1is-default-class</span>
+      <span style=color:#f92672>values</span>: <span style=color:#e6db74>&#34;true&#34;</span>
+
+</code></pre></div><h2 id=json-merge-patch>JSON Merge patch</h2>
+<p>후자에 해당하는 방법은 자세히 설명하지 않았는데, <a href=https://datatracker.ietf.org/doc/html/rfc7386>JSON Merge patch</a>라고 한다. 따로 설명이 필요 없을만큼 직관적인 동작이라, 아마 JSON Patch에 merge 연산자를 추가하지 않고 새 표준으로 만든 것 같다.</p>
+<p><a href=https://datatracker.ietf.org/doc/html/rfc7386#appendix-A>예제 테스트 케이스</a>를 보면 patch하는 JSON 중 null 값인 키는 제외된다는 점이 눈에 띈다. 하지만 이로 인해 문제되는 경우는 kubectl API validation이 막아주지 않을까 싶다. 값의 타입이 바뀌는 경우도 마찬가지이다.</p>
+<h2 id=typestrageric>type=strageric</h2>
+<p>엄밀히 말하면, kubectl patch의 기본 동작은 JSON Merge patch가 아니다. <a href=https://kubernetes.io/docs/tasks/manage-kubernetes-objects/update-api-object-kubectl-patch/#notes-on-the-strategic-merge-patch>태스크 문서 설명</a>을 보면 전략적 병합(strageric merge)라고, 파드의 컨테이너의 경우(.spec.containers) 완전히 patch JSON으로 교체되지 않고 추가된다고 설명한다. 이는 kubectl API의 구현인데, 거의 대부분은 JSON Merge patch이긴 하다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ wget -qO - https://raw.githubusercontent.com/kubernetes/kubernetes/master/api/openapi-spec/swagger.json | jq <span style=color:#e6db74>&#39;[ .. | select(.&#34;x-kubernetes-patch-strategy&#34;? != null) | .&#34;x-kubernetes-patch-strategy&#34;] | group_by(.)[] | {strategic: .[0], value: length}&#39;</span>
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;strategic&#34;</span>: <span style=color:#e6db74>&#34;merge&#34;</span>,
+  <span style=color:#e6db74>&#34;value&#34;</span>: <span style=color:#ae81ff>42</span>
+<span style=color:#f92672>}</span>
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;strategic&#34;</span>: <span style=color:#e6db74>&#34;merge,retainKeys&#34;</span>,
+  <span style=color:#e6db74>&#34;value&#34;</span>: <span style=color:#ae81ff>1</span>
+<span style=color:#f92672>}</span>
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;strategic&#34;</span>: <span style=color:#e6db74>&#34;replace&#34;</span>,
+  <span style=color:#e6db74>&#34;value&#34;</span>: <span style=color:#ae81ff>1</span>
+<span style=color:#f92672>}</span>
+<span style=color:#f92672>{</span>
+  <span style=color:#e6db74>&#34;strategic&#34;</span>: <span style=color:#e6db74>&#34;retainKeys&#34;</span>,
+  <span style=color:#e6db74>&#34;value&#34;</span>: <span style=color:#ae81ff>1</span>
+<span style=color:#f92672>}</span>
+</code></pre></div><h2 id=정리>정리</h2>
+<ul>
+<li>kubectl patch의 기본 전략은 거의 대부분 JSON Merge patch이다.</li>
+<li>JSON Merge patch의 동작은 직관적이지만, patch하는 JSON이 길어지면 알아보기 어렵다.</li>
+<li>JSON Patch는 Merge patch에 비해 연산과 대상을 알아보기 쉽다.</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://kubernetes.io/docs/tasks/manage-kubernetes-objects/update-api-object-kubectl-patch/>https://kubernetes.io/docs/tasks/manage-kubernetes-objects/update-api-object-kubectl-patch/</a></li>
+<li><a href=https://datatracker.ietf.org/doc/html/rfc6902>https://datatracker.ietf.org/doc/html/rfc6902</a></li>
+<li><a href=https://datatracker.ietf.org/doc/html/rfc7386>https://datatracker.ietf.org/doc/html/rfc7386</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
