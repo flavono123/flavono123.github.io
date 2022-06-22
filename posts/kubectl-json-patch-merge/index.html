@@ -78,7 +78,10 @@ pod/patch-test patched
 <p><a href=https://datatracker.ietf.org/doc/html/rfc7386#appendix-A>예제 테스트 케이스</a>를 보면 patch하는 JSON 중 null 값인 키는 제외된다는 점이 눈에 띈다. 하지만 이로 인해 문제되는 경우는 kubectl API validation이 막아주지 않을까 싶다. 값의 타입이 바뀌는 경우도 마찬가지이다.</p>
 <h2 id=typestrageric>type=strageric</h2>
 <p>엄밀히 말하면, kubectl patch의 기본 동작은 JSON Merge patch가 아니다. <a href=https://kubernetes.io/docs/tasks/manage-kubernetes-objects/update-api-object-kubectl-patch/#notes-on-the-strategic-merge-patch>태스크 문서 설명</a>을 보면 전략적 병합(strageric merge)라고, 파드의 컨테이너의 경우(.spec.containers) 완전히 patch JSON으로 교체되지 않고 추가된다고 설명한다. 이는 kubectl API의 구현인데, 거의 대부분은 JSON Merge patch이긴 하다.</p>
-<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ wget -qO - https://raw.githubusercontent.com/kubernetes/kubernetes/master/api/openapi-spec/swagger.json | jq <span style=color:#e6db74>&#39;[ .. | select(.&#34;x-kubernetes-patch-strategy&#34;? != null) | .&#34;x-kubernetes-patch-strategy&#34;] | group_by(.)[] | {strategic: .[0], value: length}&#39;</span>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=color:#75715e># &#34;x-kubernetes-patch-strategy&#34; 키의 값 별로 카운터</span>
+$ wget -qO - https://raw.githubusercontent.com/kubernetes/kubernetes/master/api/openapi-spec/swagger.json | <span style=color:#ae81ff>\
+</span><span style=color:#ae81ff></span>  jq <span style=color:#e6db74>&#39;[ .. | select(.&#34;x-kubernetes-patch-strategy&#34;? != null) | .&#34;x-kubernetes-patch-strategy&#34;] \
+</span><span style=color:#e6db74>    | group_by(.)[] | {strategic: .[0], value: length}&#39;</span>
 <span style=color:#f92672>{</span>
   <span style=color:#e6db74>&#34;strategic&#34;</span>: <span style=color:#e6db74>&#34;merge&#34;</span>,
   <span style=color:#e6db74>&#34;value&#34;</span>: <span style=color:#ae81ff>42</span>
