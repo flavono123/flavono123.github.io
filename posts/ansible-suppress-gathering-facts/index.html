@@ -1,0 +1,119 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Ansible Gathering Facts 하지 않기 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>Ansible Gathering Facts 하지 않기</h2>
+<small class=date>Sat Aug 6, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/ansible class=tag>ansible</a>
+</div>
+</div>
+<div class=content><p>Ansible playbook을 실행하면 항상 <a href=https://docs.ansible.com/ansible/latest/collections/ansible/builtin/gather_facts_module.html>Gathering Facts</a>를 한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ansible-playbook playbook.yml <span style=color:#f92672>[</span>options...<span style=color:#f92672>]</span>
+PLAY <span style=color:#f92672>[</span>어쩔 플레이북<span style=color:#f92672>]</span> ***************************************************************************
+
+task <span style=color:#f92672>[</span>Gathering Facts<span style=color:#f92672>]</span> *************************************************************************
+ok: <span style=color:#f92672>[</span>host_a<span style=color:#f92672>]</span>
+
+TASK <span style=color:#f92672>[</span>task1 : 어쩔 태스크<span style=color:#f92672>]</span> *********************************************************************
+ok: <span style=color:#f92672>[</span>host_a<span style=color:#f92672>]</span>
+
+TASK <span style=color:#f92672>[</span>task1 : 저쩔 태스크<span style=color:#f92672>]</span> *********************************************************************
+ok: <span style=color:#f92672>[</span>host_a<span style=color:#f92672>]</span>
+...
+
+</code></pre></div><p>하지만 수집한 facts를 쓰지 않아 불필요할 때가 많다. 또 playbook이, 여러 roles를 로드하는 식으로, 여러 play를 실행한다면 Gathering Facts가 각각 실행한다. 이 때 특정 태스크만 태그로 필터하여 play하고 싶다면 모든 play에서의 Gathering Facts는 확실히 불필요하다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ansible-playbook playbook.yml <span style=color:#f92672>[</span>options...<span style=color:#f92672>]</span> --tags<span style=color:#f92672>=</span><span style=color:#e6db74>&#34;some_tasks&#34;</span>
+...
+PLAY <span style=color:#f92672>[</span>어쩔 롤<span style=color:#f92672>]</span> *********************************************************************************
+
+TASK <span style=color:#f92672>[</span>Gathering Facts<span style=color:#f92672>]</span> *************************************************************************
+ok: <span style=color:#f92672>[</span>host_a<span style=color:#f92672>]</span>
+
+PLAY <span style=color:#f92672>[</span>저쩔 롤<span style=color:#f92672>]</span> *********************************************************************************
+
+TASK <span style=color:#f92672>[</span>Gathering Facts<span style=color:#f92672>]</span> *************************************************************************
+ok: <span style=color:#f92672>[</span>host_a<span style=color:#f92672>]</span>
+
+PLAY <span style=color:#f92672>[</span>태그 롤<span style=color:#f92672>]</span> *********************************************************************************
+
+TASK <span style=color:#f92672>[</span>Gathering Facts<span style=color:#f92672>]</span> *************************************************************************
+ok: <span style=color:#f92672>[</span>host_a<span style=color:#f92672>]</span>
+
+TASK <span style=color:#f92672>[</span>tagged_role : Run a Tagged Task<span style=color:#f92672>]</span> *********************************************************
+ok: <span style=color:#f92672>[</span>host_a<span style=color:#f92672>]</span>
+...
+</code></pre></div><p>불필요한 Gathering Facts는 시간도 소모하고 결과 출력도 한눈에 보기 어렵게 한다. 그래서 꼭 하고 싶지 않은 Gathering Facts를 안하는 방법이 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ANSIBLE_GATHERING<span style=color:#f92672>=</span>explicit ansible-playbook playbook.yml <span style=color:#f92672>[</span>options...<span style=color:#f92672>]</span> --tags<span style=color:#f92672>=</span><span style=color:#e6db74>&#34;some_tasks&#34;</span>
+...
+PLAY <span style=color:#f92672>[</span>어쩔 롤<span style=color:#f92672>]</span> *********************************************************************************
+
+PLAY <span style=color:#f92672>[</span>저쩔 롤<span style=color:#f92672>]</span> *********************************************************************************
+
+PLAY <span style=color:#f92672>[</span>태그 롤<span style=color:#f92672>]</span> *********************************************************************************
+
+TASK <span style=color:#f92672>[</span>tagged_role : Run a Tagged Task<span style=color:#f92672>]</span> *********************************************************
+ok: <span style=color:#f92672>[</span>host_a<span style=color:#f92672>]</span>
+...
+</code></pre></div><p>**ANSIBLE_GATHERING 환경 변수에 <code>explicit</code>**을 써주자. <a href=https://docs.ansible.com/ansible/latest/reference_appendices/config.html#envvar-ANSIBLE_GATHERING>이 환경 변수는 Gathering Facts에 대한 정책을 구성할 수 있다.</a> 구성 옵션 <a href=https://docs.ansible.com/ansible/latest/reference_appendices/config.html#default-gathering>DEFAULT_GATHERING</a>을 보면 Gathering Facts에 대한 정책을 확인할 수 있다:</p>
+<ul>
+<li><code>implicit</code>(default): play에 <code>gather_facts: False</code>로 되어 있지 않으면 facts 수집</li>
+<li><code>explicit</code>: implicit과 반대로 명시하지 않으면(<code>gather_facts: True</code>) facts를 수집하지 않는다</li>
+<li><code>smart</code>: play에서 중복되는 호스트의 facts를 최초 한번만 수집한다</li>
+</ul>
+<p>나는 현재 facts를 잘 활용하고 있지 않지만, 사용한다면 smart 정책도 좋은 옵션이다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>❯ ANSIBLE_GATHERING<span style=color:#f92672>=</span>smart ansible-playbook playbook.yml <span style=color:#f92672>[</span>options...<span style=color:#f92672>]</span> --tags<span style=color:#f92672>=</span><span style=color:#e6db74>&#34;some_tasks&#34;</span>
+...
+PLAY <span style=color:#f92672>[</span>어쩔 롤<span style=color:#f92672>]</span> *********************************************************************************
+
+TASK <span style=color:#f92672>[</span>Gathering Facts<span style=color:#f92672>]</span> *************************************************************************
+ok: <span style=color:#f92672>[</span>host_a<span style=color:#f92672>]</span>
+
+PLAY <span style=color:#f92672>[</span>저쩔 롤<span style=color:#f92672>]</span> *********************************************************************************
+
+PLAY <span style=color:#f92672>[</span>태그 롤<span style=color:#f92672>]</span> *********************************************************************************
+
+TASK <span style=color:#f92672>[</span>tagged_role : Run a Tagged Task<span style=color:#f92672>]</span> *********************************************************
+ok: <span style=color:#f92672>[</span>host_a<span style=color:#f92672>]</span>
+...
+</code></pre></div><p><code>smart</code> 정책은 모든 play에서 호스트다마 중복 없이 facts를 한번씩만 수집한다.</p>
+<h2 id=정리>정리</h2>
+<ul>
+<li>ANSIBLE_GATHERING 환경변수는 Gathering Facts 태스크 실행 정책을 제어한다.
+<ul>
+<li>Playbook에서 facts를 사용하지 않는다면 <code>explicit</code>으로 하자(default는 <code>implicit</code>).</li>
+<li>사용한다면 중복을 줄이기 위해 <code>smart</code>를 사용해보자.</li>
+</ul>
+</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://stackoverflow.com/questions/72094835/disable-ansible-gather-facts-on-the-command-line>https://stackoverflow.com/questions/72094835/disable-ansible-gather-facts-on-the-command-line</a></li>
+<li><a href=https://docs.ansible.com/ansible/latest/reference_appendices/config.html#>https://docs.ansible.com/ansible/latest/reference_appendices/config.html#</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
