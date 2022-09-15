@@ -1,0 +1,137 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Ansible에서 unprivileged become_user 실패 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>Ansible에서 unprivileged become_user 실패</h2>
+<small class=date>Thu Sep 15, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/ansible class=tag>ansible</a>
+<a href=https://flavono123.github.io/tags/linux class=tag>linux</a>
+<a href=https://flavono123.github.io/tags/maxscale class=tag>maxscale</a>
+</div>
+</div>
+<div class=content><p>Ansible 태스크에서 <code>become: yes</code>를 사용해 <code>sudo</code>처럼 루트 권한으로 명령을 실행한다. 예를 들면 Ubuntu에서 apt 패키지를 쓸 때 사용할 수 있다. 하지만 루트가 아닌 특정 사용자로 실행해야 하는 명령도 있다. 최근에 <a href=https://mariadb.com/kb/en/maxscale/>MaxScale</a>을 2.5 버전으로 업그레이드 했는데, 구성 확인 명령이 이전과 달리 <code>maxscale</code> 사용자만 실행할 수 있도록 강제하고 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ whoami
+ubuntu
+$ maxscale --config-check
+info   : MaxScale will be run in the terminal process.
+2022-09-15 10:34:01   notice : Worker message queue size: 1MiB
+2022-09-15 10:34:01   warning: Number of threads set to 8, which is greater than the number of processors available: <span style=color:#ae81ff>1</span>
+2022-09-15 10:34:01   warning: Number of threads set to 8, which is greater than the number of processors available: <span style=color:#ae81ff>1</span>
+2022-09-15 10:34:01   notice : Using up to 296.41MiB of memory <span style=color:#66d9ef>for</span> query classifier cache
+2022-09-15 10:34:01   notice : syslog logging is enabled.
+2022-09-15 10:34:01   notice : maxlog logging is enabled.
+alert  : MaxScale doesn<span style=color:#e6db74>&#39;t have write permission to &#39;</span>/var/cache/maxscale<span style=color:#e6db74>&#39;.: Permission denied.
+</span><span style=color:#e6db74>$ ll /var/cache/maxscale/
+</span><span style=color:#e6db74>total 12
+</span><span style=color:#e6db74>drwxr-xr-x  2 maxscale maxscale 4096 Sep 14 18:14 ./
+</span><span style=color:#e6db74>drwxr-xr-x 14 root     root     4096 Sep 14 17:45 ../
+</span><span style=color:#e6db74>-rwxr-xr-x  1 maxscale maxscale    4 Sep 14 18:14 maxscale.lock*
+</span><span style=color:#e6db74>$ sudo maxscale --config-check
+</span><span style=color:#e6db74>alert  : MaxScale cannot be run as root.
+</span><span style=color:#e6db74>$ sudo chown -R ubuntu:ubuntu /var/cache/maxscale/
+</span><span style=color:#e6db74>$ ll /var/cache/maxscale/
+</span><span style=color:#e6db74>total 12
+</span><span style=color:#e6db74>drwxr-xr-x  2 ubuntu ubuntu 4096 Sep 14 18:14 ./
+</span><span style=color:#e6db74>drwxr-xr-x 14 root   root   4096 Sep 14 17:45 ../
+</span><span style=color:#e6db74>-rwxr-xr-x  1 ubuntu ubuntu    4 Sep 14 18:14 maxscale.lock*
+</span><span style=color:#e6db74>$ maxscale --config-check
+</span><span style=color:#e6db74>info   : MaxScale will be run in the terminal process.
+</span><span style=color:#e6db74>2022-09-15 10:57:36   notice : Worker message queue size: 1MiB
+</span><span style=color:#e6db74>2022-09-15 10:57:36   warning: Number of threads set to 8, which is greater than the number of processors available: 1
+</span><span style=color:#e6db74>2022-09-15 10:57:36   warning: Number of threads set to 8, which is greater than the number of processors available: 1
+</span><span style=color:#e6db74>2022-09-15 10:57:36   notice : Using up to 296.41MiB of memory for query classifier cache
+</span><span style=color:#e6db74>2022-09-15 10:57:36   notice : syslog logging is enabled.
+</span><span style=color:#e6db74>2022-09-15 10:57:36   notice : maxlog logging is enabled.
+</span><span style=color:#e6db74>alert  : MaxScale doesn&#39;</span>t have write permission to <span style=color:#e6db74>&#39;/var/run/maxscale&#39;</span>.: Permission denied.
+</code></pre></div><p>로그인한 사용자인 <code>ubuntu</code>로 실행했을 때 /var/cache/maxscale 쓰기 권한 문제로 막힌다. sudo를 써서 루트로 명령하는 것은 아예 막혀 있다. /var/cache/maxscale의 소유자와 그룹을 <code>ubuntu</code>로 바꿔도 실패한다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ sudo chown -R maxscale:maxscale /var/cache/maxscale/
+ubuntu@ldev1:~$ maxscale --config-check
+info   : MaxScale will be run in the terminal process.
+2022-09-15 10:57:53   notice : Worker message queue size: 1MiB
+2022-09-15 10:57:53   warning: Number of threads set to 8, which is greater than the number of processors available: <span style=color:#ae81ff>1</span>
+2022-09-15 10:58:00   warning: Number of threads set to 8, which is greater than the number of processors available: <span style=color:#ae81ff>1</span>
+2022-09-15 10:58:00   notice : Using up to 296.41MiB of memory <span style=color:#66d9ef>for</span> query classifier cache
+2022-09-15 10:58:00   notice : syslog logging is enabled.
+2022-09-15 10:58:00   notice : maxlog logging is enabled.
+2022-09-15 10:58:00   notice : Running OS: Linux@5.15.0-47-generic, <span style=color:#75715e>#51-Ubuntu SMP Thu Aug 11 07:51:15 UTC 2022, x86_64 with 1</span>
+processor cores.
+2022-09-15 10:58:00   notice : Total usable main memory: 1.93GiB.
+2022-09-15 10:58:00   notice : MariaDB MaxScale 2.5.21 started <span style=color:#f92672>(</span>Commit: eb659891d7b507958f3c5f100d1ebe5f0f68afaf<span style=color:#f92672>)</span>
+2022-09-15 10:58:00   notice : MaxScale is running in process <span style=color:#ae81ff>4713</span>
+
+Configuration file : /etc/maxscale.cnf
+Log directory      : /var/log/maxscale
+Data directory     : /var/lib/maxscale
+Module directory   : /usr/lib/x86_64-linux-gnu/maxscale
+Service cache      : /var/cache/maxscale
+
+2022-09-15 10:58:00   notice : Configuration file: /etc/maxscale.cnf
+2022-09-15 10:58:00   notice : Log directory: /var/log/maxscale
+2022-09-15 10:58:00   notice : Data directory: /var/lib/maxscale
+2022-09-15 10:58:00   notice : Module directory: /usr/lib/x86_64-linux-gnu/maxscale
+2022-09-15 10:58:00   notice : Service cache: /var/cache/maxscale
+2022-09-15 10:58:00   notice : Loaded module qc_sqlite: V1.0.0 from /usr/lib/x86_64-linux-gnu/maxscale/libqc_sqlite.so
+2022-09-15 10:58:00   notice : Query classification results are cached and reused. Memory used per thread: 37.05MiB
+2022-09-15 10:58:00   warning: File format of <span style=color:#e6db74>&#39;/var/lib/maxscale/.secrets&#39;</span> is deprecated. Please generate a new encryption key <span style=color:#f92672>(</span><span style=color:#e6db74>&#39;maxkeys&#39;</span><span style=color:#f92672>)</span> and re-encrypt passwords <span style=color:#f92672>(</span><span style=color:#e6db74>&#39;maxpasswd&#39;</span><span style=color:#f92672>)</span>.
+2022-09-15 10:58:00   notice : Using encrypted passwords. Encryption key read from <span style=color:#e6db74>&#39;/var/lib/maxscale/.secrets&#39;</span>.
+2022-09-15 10:58:00   notice : MaxScale started with <span style=color:#ae81ff>8</span> worker threads, each with a stack size of <span style=color:#ae81ff>8388608</span> bytes.
+2022-09-15 10:58:00   notice : Loading /etc/maxscale.cnf.
+2022-09-15 10:58:00   notice : Loaded module MariaDBClient: V1.1.0 from /usr/lib/x86_64-linux-gnu/maxscale/libmariadbclient.so
+2022-09-15 10:58:00   notice : Loaded module readconnroute: V2.0.0 from /usr/lib/x86_64-linux-gnu/maxscale/libreadconnroute.so
+2022-09-15 10:58:00   notice : Loaded module mariadbmon: V1.5.0 from /usr/lib/x86_64-linux-gnu/maxscale/libmariadbmon.so
+2022-09-15 10:58:00   notice : <span style=color:#f92672>(</span>Read_Listener<span style=color:#f92672>)</span> Loaded module MariaDBAuth: V2.1.0 from /usr/lib/x86_64-linux-gnu/maxscale/libmariadbauth.so
+2022-09-15 10:58:00   notice : Configuration was successfully verified.
+2022-09-15 10:58:00   notice : MaxScale is shutting down.
+2022-09-15 10:58:00   notice : Stopped MaxScale REST API
+2022-09-15 10:58:00   notice : All workers have shut down.
+2022-09-15 10:58:00   notice : MaxScale shutdown completed
+</code></pre></div><p>다시 /var/cache/maxscale/의 소유자와 그룹을 <code>maxscale</code>로 바꾸고 sudo를 사용해 <code>maxscale</code> 사용자로 실행하니 성공한다.</p>
+<p>이를 Ansible에서 하기 위해 태스크에 become과 become_user를 추가했다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml>- <span style=color:#f92672>name</span>: <span style=color:#ae81ff>Test Maxscale Configuration</span>
+  <span style=color:#f92672>become</span>: <span style=color:#66d9ef>yes</span>
+  <span style=color:#f92672>become_user</span>: <span style=color:#ae81ff>maxscale</span>
+  <span style=color:#f92672>command</span>: <span style=color:#ae81ff>maxscale --config-check</span>
+</code></pre></div><p>하지만 play하면 다음 에러가 발생한다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>Failed to set permissions on the temporary files Ansible needs to create when becoming an unprivileged user <span style=color:#f92672>(</span>rc: 1, err: chmod: invalid mode: ‘A+user:maxscale:rx:allow’<span style=color:#ae81ff>\n</span>Try <span style=color:#e6db74>&#39;chmod --help&#39;</span> <span style=color:#66d9ef>for</span> more information.<span style=color:#ae81ff>\n</span><span style=color:#f92672>})</span>. For information on working around this, see https://docs.ansible.com/ansible-core/2.12/user_guide/become.html#risks-of-becoming-an-unprivileged-user
+</code></pre></div><p>에러는 Ansible이 unprivileged user(maxscale)로 실행하기 위해 임시 파일을 만드는데 권한 실패 문제, 즉 chmod를 잘못 써서 발생했다(<code>A+user:maxscale:rx:allow</code>는 딱 봐도 chmod 모드 포맷이 아닌데 왜 저리 썼는지 모르겠다). <a href=https://docs.ansible.com/ansible-core/2.12/user_guide/become.html#risks-of-becoming-an-unprivileged-user>참고 링크</a>를 들어가 읽어 보았다:</p>
+<p>지금과 같은 상황, 즉 become 사용 시 become_user가 루트 또는 루트 권한이 없는 unprivileged 사용자일 경우, Ansible은 POSIX.1e ACL을 지원하는 파일시스템에서 권한을 unprivileged 사용자에게 공유하여 이를 해결한다. <a href="https://www.gsp.com/cgi-bin/man.cgi?section=1&topic=setfacl">setfacl</a> POSIX.1e ACL 도구 중 하나이며 Ubuntu에선 패키지로 설치할 수 있다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ sudo apt install acl
+</code></pre></div><p>설치하여 실행 파일 setfacl이 있다면 위 태스크는 성공한다. POSIX ACL에 대한 더 자세한 내용은 파일 권한과 비교한 <a href=https://www.bangseongbeom.com/linux-acl-guide.html#%ED%8C%8C%EC%9D%BC-%ED%8D%BC%EB%AF%B8%EC%85%98-vs-acl>이 글</a>을 참고하자</p>
+<h2 id=정리>정리</h2>
+<ul>
+<li>Ansible become은 unprivileged 사용자로 실행 시 실패한다.</li>
+<li>Ubuntu에선 setfacl를 설치하여 Ansible이 unprivileged 사용자에게 파일 권한을 주어 이를 해결한다.</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://docs.ansible.com/ansible/latest/user_guide/become.html#risks-of-becoming-an-unprivileged-user>https://docs.ansible.com/ansible/latest/user_guide/become.html#risks-of-becoming-an-unprivileged-user</a></li>
+<li><a href="https://www.gsp.com/cgi-bin/man.cgi?section=3&topic=posix1e">https://www.gsp.com/cgi-bin/man.cgi?section=3&topic=posix1e</a></li>
+<li><a href=https://www.bangseongbeom.com/linux-acl-guide.html#%ED%8C%8C%EC%9D%BC-%ED%8D%BC%EB%AF%B8%EC%85%98-vs-acl>https://www.bangseongbeom.com/linux-acl-guide.html#%ED%8C%8C%EC%9D%BC-%ED%8D%BC%EB%AF%B8%EC%85%98-vs-acl</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
