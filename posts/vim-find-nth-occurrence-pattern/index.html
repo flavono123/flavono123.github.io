@@ -1,0 +1,68 @@
+<!doctype html><html lang=en>
+<head>
+<meta charset=utf-8>
+<meta http-equiv=x-ua-compatible content="IE=edge">
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Vim 줄에서 N번째 패턴 검색 | flavono123</title>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/post.css>
+<script defer src=https://flavono123.github.io/assets/js/lbox.js></script>
+<link rel=stylesheet href=https://flavono123.github.io/assets/css/common.css>
+</head>
+<body>
+<main>
+<header>
+<a class=site-title href=https://flavono123.github.io/>flavono123</a>
+</header>
+<section class=article>
+<div class=article-header>
+<h2 class=article-title>Vim 줄에서 N번째 패턴 검색</h2>
+<small class=date>Sun Sep 25, 2022</small>
+<div class=tags>
+<a href=https://flavono123.github.io/tags/vim class=tag>vim</a>
+<a href=https://flavono123.github.io/tags/regexp class=tag>regexp</a>
+</div>
+</div>
+<div class=content><p>Vim에서 줄의 n번째 패턴을 검색하는 법을 <a href=https://vi.stackexchange.com/questions/8621/substitute-second-occurence-on-line>찾아보고</a> 배운 점을 정리한다. 줄의 세번째 &lsquo;Fab&rsquo;이라는 단어(패턴)를 찾는 방법이다:</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-vim data-lang=vim><span style=color:#a6e22e>Fab1</span> <span style=color:#a6e22e>Fab2</span> **<span style=color:#a6e22e>Fab</span>**<span style=color:#ae81ff>3</span><span style=color:#960050;background-color:#1e0010>
+</span><span style=color:#960050;background-color:#1e0010></span>    <span style=color:#a6e22e>Fab1</span> <span style=color:#a6e22e>Fab2</span> **<span style=color:#a6e22e>Fab</span>**<span style=color:#ae81ff>3</span> <span style=color:#a6e22e>Fab4</span><span style=color:#960050;background-color:#1e0010>
+</span><span style=color:#960050;background-color:#1e0010></span>~<span style=color:#960050;background-color:#1e0010>
+</span><span style=color:#960050;background-color:#1e0010></span>~<span style=color:#960050;background-color:#1e0010>
+</span><span style=color:#960050;background-color:#1e0010></span>~<span style=color:#960050;background-color:#1e0010>
+</span><span style=color:#960050;background-color:#1e0010></span>/\<span style=color:#a6e22e>v</span>(.{-}\<span style=color:#a6e22e>zsFab</span>){<span style=color:#ae81ff>3</span>}<span style=color:#960050;background-color:#1e0010>
+</span></code></pre></div><p>먼저 <code>\v</code>은 <a href=https://learnbyexample.github.io/vim_reference/Regular-Expressions.html#very-magic>very magic modifier</a>로 메타 문자를 escape 없이 쓸 수 있게 도와준다. 만약 <code>\v</code>를 쓰지 않는다면 위 vim 정규표현식은 다음과 같다. <code>\(.\{-}\zsFab\)\{3}</code>(n번째 패턴을 찾는 것과는 거리가 있는, vim 정규표현식을 보기 편하게 하기 위함이다).</p>
+<p><code>{-}</code>은 vim의 <a href=https://vimhelp.org/pattern.txt.html#non-greedy>non-greedy</a> 매칭이다.</p>
+<p><code>\zs</code>는 매칭 시작 패턴을 지정하는 것인데, 지금의 경우 PCRE 정규표현식에서 그룹 매치와 정확히 일치한다. 따라서 위 정규표현식을 PCRE로 바꾸면 다음과 같다:</p>
+<p><a href=https://regex101.com/r/GCFV1l/1>https://regex101.com/r/GCFV1l/1</a></p>
+<p>Quantifier와 non-greedy를 통해 찾고 싶은 문자로 끝나는 반복하는 패턴의 찾고 싶은 등장번째(n)로 검색하는 것이다. 따라서 2번째 패턴을 찾으려고 하면 두번째 줄에선 네번째 패턴까지 찾아 주게 된다.</p>
+<div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-vim data-lang=vim><span style=color:#a6e22e>Fab1</span> **<span style=color:#a6e22e>Fab</span>**<span style=color:#ae81ff>2</span> <span style=color:#a6e22e>Fab3</span><span style=color:#960050;background-color:#1e0010>
+</span><span style=color:#960050;background-color:#1e0010></span>    <span style=color:#a6e22e>Fab1</span> **<span style=color:#a6e22e>Fab</span>**<span style=color:#ae81ff>2</span> <span style=color:#a6e22e>Fab3</span> **<span style=color:#a6e22e>Fab</span>**<span style=color:#ae81ff>4</span><span style=color:#960050;background-color:#1e0010>
+</span><span style=color:#960050;background-color:#1e0010></span>~<span style=color:#960050;background-color:#1e0010>
+</span><span style=color:#960050;background-color:#1e0010></span>~<span style=color:#960050;background-color:#1e0010>
+</span><span style=color:#960050;background-color:#1e0010></span>~<span style=color:#960050;background-color:#1e0010>
+</span><span style=color:#960050;background-color:#1e0010></span>/\<span style=color:#a6e22e>v</span>(.{-}\<span style=color:#a6e22e>zsFab</span>){<span style=color:#ae81ff>2</span>}<span style=color:#960050;background-color:#1e0010>
+</span></code></pre></div><p>내가 실제로 해결하려 했던 문제는 <strong>&lsquo;YAML 값에서 &ldquo;:&rdquo; 찾기&rsquo;</strong> 이다. YAML 키 끝에 &ldquo;:&ldquo;이 있기 때문에 &lsquo;YAML 파일에서 줄의 두번째 &ldquo;:&ldquo;를 찾기&rsquo;와 같은 문제다.</p>
+<p>Vim과 PCRE 정규표현식이 같지 않다는 것은 느끼고 있었지만, 이번에 제대로 알게 됐고 이번처럼 활용할 일은 지금까지 없었다. 그리고 아직 vim의 시작 매치(<code>\zs</code>)와 PCRE의 그룹 캡쳐(<code>(&lt;...>)</code>)가 왜 대구를 이루는진 모르겠다. Vim의 그룹 캡쳐가 더 종류가 많아 보인다.</p>
+<p>그래서 n번째 패턴 찾기라는 사례로 정리한다. Vim도 정규표현식 엔진의 과정, 결과를 시각적으로 풀어주는 도구가 있으면 좋을거 같다.</p>
+<h2 id=정리>정리</h2>
+<ul>
+<li>Vim에서 n번째 패턴을 찾을 때 <code>/\v(.{-}\zs&lt;패턴>){&lt;n>}</code>을 사용하자.</li>
+</ul>
+<hr>
+<h2 id=참고>참고</h2>
+<ul>
+<li><a href=https://vi.stackexchange.com/questions/8621/substitute-second-occurence-on-line>https://vi.stackexchange.com/questions/8621/substitute-second-occurence-on-line</a></li>
+<li><a href=https://learnbyexample.github.io/vim_reference/Regular-Expressions.html>https://learnbyexample.github.io/vim_reference/Regular-Expressions.html</a></li>
+<li><a href=https://vimhelp.org/>https://vimhelp.org/</a></li>
+</ul>
+</div>
+</section>
+<div id=disqus_thread></div>
+<script type=application/javascript>var disqus_config=function(){};(function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById('disqus_thread').innerHTML='Disqus comments not available by default when the website is previewed locally.';return}var b=document,a=b.createElement('script');a.async=!0,a.src='//flavono123.disqus.com/embed.js',a.setAttribute('data-timestamp',+new Date),(b.head||b.body).appendChild(a)})()</script>
+<noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript>
+<a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a>
+<footer>
+<p>&copy; 2021 - 2022 </p>
+</footer>
+</main>
+</body>
+</html>
