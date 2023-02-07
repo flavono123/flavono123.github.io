@@ -24,9 +24,9 @@
 <div class=content><p>블로그를 안한 사이 이직을 했고 여기선 쿠버네티스, AWS EKS, 를 사용해 제품을 운영하고 있다. EKS를 쓰긴하지만, 콘솔이나 <code>eksctl</code>가 아닌 <code>kubectl</code>를 더 많이 써서 작업하는 편이다. 그럴때마다 굉장히 불편하게 반복하는 일들이 몇가지 있다.</p>
 <ol>
 <li>특정 노드에서 실행 중인 파드를 확인; 이 파드 돌고 있는 노드엔 또 어떤 파드들이 있지?</li>
-<li>특정 노드의 정보 확인; 인스턴스 타입, 노드 그룹, 가용영역 등
-이런 작업들이 왜 짜증났냐 하면</li>
+<li>특정 노드의 정보 확인; 인스턴스 타입, 노드 그룹, 가용영역 등</li>
 </ol>
+<p>이런 작업들이 왜 짜증났냐 하면&mldr;</p>
 <h2 id=뭐가-문제였나>뭐가 문제였나</h2>
 <p>첫번째, 다시 말하면 &ldquo;특정 파드와 같은 노드에서 돌고 있는 다른 파드를 볼 땐&rdquo;, <strong>항상 두번 명령을 썼다.</strong></p>
 <div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k get po pod-name -owide <span style=color:#75715e># 노드 이름을 찾기 위해</span>
@@ -50,7 +50,7 @@ topology.kubernetes.io/zone: ap-northeast-2a
 <p><a href=https://github.com/flavono123/kubectl-eks-node>eks-node</a>는 이런 문제를 해결하기 위해, 즉 위 같은 반복 작업을 간단하게 하기 위해 만들었다. <a href=https://github.com/flavono123/kubectl-eks-node#usage>사용법(usage)</a>도 나름 썼으니 설치법 소개(=홍보)부터한다:</p>
 <div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k krew index add flew https://github.com/flavono123/flew-index.git
 $ k krew install flew/eks-node
-</code></pre></div><p><a href=https://krew.sigs.k8s.io/>krew</a>로 설치할 수 있도록 했다(관련 자세한 이야기는 후술한다). krew를 쓰지 않는다면 <a href=https://github.com/flavono123/kubectl-eks-node#install>README의</a> 다른 설치법을 사용해보길.</p>
+</code></pre></div><p><a href=https://krew.sigs.k8s.io/>krew</a>로 설치할 수 있도록 했다(관련 자세한 이야기는 후술한다). krew를 쓰지 않는다면 <a href=https://github.com/flavono123/kubectl-eks-node#install>README의 다른 설치법</a> 을 사용해보길.</p>
 <p>eks-node는 앞선 문제들을 해결하는 데모를 보면:</p>
 <div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh>$ k eks-node ip-xxx-yyy-zzz-aaa.region-code.compute.internal
 <span style=color:#f92672>{</span>
@@ -102,16 +102,16 @@ ip-xxx-yyy-zzz-ddd.region-code.compute.internal      Ready    &lt;none&gt;   42d
 </code></pre></div><p>특히 인스턴스 타입이나 노드 그룹은, 같은 인스턴스 타입/노드 그룹의 다른 노드는 상태가 어때? 이런게 궁금했기 때문이다.</p>
 <h2 id=간단하게-만들었다>간단하게 만들었다</h2>
 <p>eks-node의 현재 버전은(<a href=https://github.com/flavono123/kubectl-eks-node/releases/tag/v0.1.1>v0.1.1</a>) 쉘 스크립트를 사용해 만들었다. 그래서 앞서 설명한, 파이프로 연결된 한 줄 명령과 <code>yq</code> 사용을, 실제 플러그인에도 거의 비슷하게 구현했다. 아마 <code>kubectl</code>을 자주 쓰는 사람이라면 <code>yq(jq)</code>가 익숙할거 같다.</p>
-<p>그런데 쉘 스크립트로 krew 플러그인을 만들어 볼 도전을 할 계기, 빌드업이 있었다. <strong>&ldquo;쉘에서 어떻게든 한 줄 짜리 명령으로 끄적거린 이런게 플러그인을 만들어도 돼?&ldquo;라는 물음에 답을 준</strong> 다음 경험이다.</p>
+<p>그런데 쉘 스크립트로 krew 플러그인을 만들어 볼 도전을 할 계기를 만들어 준 빌드업이 있었다. <strong>&ldquo;쉘에서 어떻게든 한 줄 짜리 명령으로 끄적거린 이런게 플러그인을 만들어도 돼?&ldquo;라는 물음에 답을 준</strong> 다음 경험이다.</p>
 <h3 id=원래-그런거네>원래 그런거네?</h3>
 <p><a href=https://krew.sigs.k8s.io/plugins/>krew 메인 index</a>에도 등록된, <a href=https://github.com/jordanwilson230/kubectl-plugins/tree/krew#kubectl-prompt>prompt</a> 라는 플러그인이 있다. <code>kubectl</code>의 파괴적인 명령, 예를 들어 <code>create</code>, <code>delete</code> 처럼 클러스터의 상태를 바꾸는, <code>get</code> 같지 않은 명령들을 쓸 때 yes or no?의 확인 프롬프트를 띄워준다. 또 프롬프트를 띄울지 말지 컨텍스트나 네임스페이스 별로 정할 수 있다.</p>
-<p>회사에서, 중요한 컨텍스트 또는 네임스페이스에서 실수로 명령을 쉽게 날리는 걸 막기 위해, 이 플러그인을 사용했다. 그런데 파드 생성하는 <code>run</code> 명령이 프롬프트로 막히지 않았다. 검증을 <code>run</code>으로 했기에 살짝 어이 없어하며 코드를 살펴봤는데, 왠걸 <a href=https://github.com/jordanwilson230/kubectl-plugins/blob/krew/kubectl-prompt#L1>bash로 작성돼 있었다</a>. 그리고 <a href=https://github.com/jordanwilson230/kubectl-plugins/pull/47><code>run</code> 명령을 지원하는 PR</a>을 쉽게 만들었다(merge는 아주 빨리됐지만, 릴리즈는 한참 늦거나 안할거 같아 난 로컬 쉘 스크립트를 수정해서 쓰고 있다). </p>
+<p>회사에서, 중요한 컨텍스트 또는 네임스페이스에서 실수로 명령을 쉽게 날리는 걸 막기 위해, 이 플러그인을 사용했다. 그런데 파드 생성하는 <code>run</code> 명령이 프롬프트로 막히지 않았다. 검증을 <code>run</code>으로 했기에 살짝 어이 없어하며 코드를 살펴봤는데, 왠걸 <a href=https://github.com/jordanwilson230/kubectl-plugins/blob/krew/kubectl-prompt#L1>bash로 작성돼 있었다</a>. 그래서 <a href=https://github.com/jordanwilson230/kubectl-plugins/pull/47><code>run</code> 명령을 지원하는 PR</a>을 쉽게 만들었다(merge는 아주 빨리됐지만, 릴리즈는 한참 늦거나 안할거 같아 난 로컬 쉘 스크립트를 수정해서 쓰고 있다). </p>
 <p>이것이 kubectl krew 플러그인을 만만하게(?) 보게 된 첫번째 썰이다.</p>
 <h3 id=ctx-ns-너네도>ctx, ns 너네도?</h3>
 <p>쿠버네티스, 특히 <code>kubectl</code> 을 많이 쓰고 또 <code>krew</code> 역시 사용한다면, <code>ctx</code>와 <code>ns</code> 두 플러그인은 정말 많이 쓰고 있을 것 같다. 이 두 플러그인 역시 bash 스크립트이다. 생각해보면 컨텍스트나 네임스페이스를 교체하는 일은 <code>kubectl</code> 으로도 할 수 있지만 명령이 길어 사용하기 불편하다. 그걸 alias 수준으로, 서브 커맨드(플러그인)으로 짧게 제공하는 것이, 이 둘을 포함한, 대부분의 krew 플러그인의 구현이다.</p>
 <ul>
-<li>ctx: <a href=https://github.com/ahmetb/kubectx/blob/master/kubectx#L111><code>k config use-context &lt;context></code></a></li>
-<li>ns: <a href=https://github.com/ahmetb/kubectx/blob/master/kubens#L103><code>k config set-context &lt;context> --namespace=&lt;namespace></code></a></li>
+<li>ctx: <code>k config use-context &lt;context></code>(<a href=https://github.com/ahmetb/kubectx/blob/master/kubectx#L111>github</a>)</li>
+<li>ns: <code>k config set-context &lt;context> --namespace=&lt;namespace></code>(<a href=https://github.com/ahmetb/kubectx/blob/master/kubens#L103>github</a>)</li>
 </ul>
 <p>유명한 플러그인까지 쉘(bash)로 간단하게 구현되어 있으니, eks-node를 만들 때 거침 없이 쉘 스크립트로 만들 수 있었다. 특히 ctx는 만들며 참고를 많이 했다.</p>
 <h2 id=대단해져-보려고-했다>대단해(?)져 보려고 했다</h2>
@@ -137,10 +137,10 @@ ip-xxx-yyy-zzz-ddd.region-code.compute.internal      Ready    &lt;none&gt;   42d
 <li>너무 간단한 기능의 플러그인이다.</li>
 <li>이런 방향으로 확장시켜보는게 어떻겠냐?(e.g. 멀티 클라우드 지원).</li>
 <li>계획은 말해 뭐해 ^^ 만들어 가지고와.</li>
-<li>커스텀 krew index에 올릴 수도 있다.
-라고 해주어서, 가장 쉽게 할 수 있는 마지막 옵션을 사용했다. 나만의 <a href=https://github.com/flavono123/flew-index>krew index</a>를 만들었다.</li>
+<li><a href=https://krew.sigs.k8s.io/docs/developer-guide/custom-indexes/>커스텀 krew index에 올릴 수도 있다.</a></li>
 </ul>
-<p>또, 비록 구현은 간단할지라도, 꽤 큰(?), 컨벤션이 잘 갖춰진, 쿠버네티스 분과 오픈소스에 기여를 시도한 것에서 배운 점도 많았다. 특히 마지막의 경험은, 엄격한 CI를 만드는걸 좋아하는 나로썬, 아주 흥미로웠다.</p>
+<p>라고 해주어서, 가장 쉽게 할 수 있는 마지막 옵션을 사용했다. 나만의 <a href=https://github.com/flavono123/flew-index>krew index</a>를 만들었다.</p>
+<p>또, 비록 구현은 간단할지라도, 꽤 큰(?), 컨벤션이 잘 갖춰진, 쿠버네티스 분과(SIG) 오픈소스에 기여를 시도한 것에서 배운 점도 많았다. 특히 마지막의 경험은, 엄격한 CI를 만드는걸 좋아하는 나로썬, 아주 흥미로웠다.</p>
 <p>사실 처음부터 어느정돈 krew index를 목표로 만들긴 했으나, 막상 PR을 만들기 전까진 고민도 꽤 있었다.
 ctx/ns만큼 유용한가? 대중성이 있을까?(아직도 난 내가 만든 EKS 노드 패턴이 다 이렇게 쓰는지 우리 회사만 그런지 잘 모른다) Github Star를 모아서 갈까? 사용법을 GIF로 만들고 로고쯤은 만들어야 먹힐까? 등등. 결국엔 그럴 필요 없이 PR부터 찔러본게 여기까지 경험의 지름길이 된거 같다.</p>
 <h2 id=대단한-플러그인이-되기>대단한 플러그인이 되기</h2>
